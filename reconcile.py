@@ -687,13 +687,104 @@ INCOME_CATEGORIES_EXPENSE = [
 OTHER_CATEGORIES = ["Tip/Minus/Lebih"]
 
 
-def sumif_formula(sheets_last_row, category):
-    parts = []
-    for sheet, last_row in sheets_last_row.items():
-        parts.append(
-            f"SUMIF('{sheet}'!$C$2:$C${last_row},\"{category}\",'{sheet}'!$J$2:$J${last_row})"
-        )
-    return "=" + "+".join(parts)
+# ---------------------------------------------------------------------------
+# Helper pivot: setiap laporan keuangan ditulis per-rekening (kolom),
+# dengan kolom paling kanan = TOTAL keseluruhan. Ini supaya selisih di
+# Neraca/Diagnostik bisa langsung ditelusuri ke rekening mana penyebabnya,
+# tanpa harus buka satu-satu.
+# ---------------------------------------------------------------------------
+
+def col_letter(i):
+    return get_column_letter(i)
+
+
+def pivot_total_col(sheets):
+    return 2 + len(sheets)
+
+
+def write_pivot_header(ws, row, sheets, label=""):
+    ws.cell(row=row, column=1, value=label)
+    for i, sheet in enumerate(sheets):
+        c = 2 + i
+        cell = ws.cell(row=row, column=c, value=sheet)
+        cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+    total_col = pivot_total_col(sheets)
+    ws.cell(row=row, column=total_col, value="TOTAL")
+    style_header(ws, row, total_col)
+    ws.row_dimensions[row].height = 32
+
+
+def write_pivot_section(ws, row, label, sheets):
+    """Baris judul section (mis. 'PENDAPATAN'), fill/bold di seluruh lebar tabel."""
+    total_col = pivot_total_col(sheets)
+    ws.cell(row=row, column=1, value=label)
+    for c in range(1, total_col + 1):
+        cell = ws.cell(row=row, column=c)
+        cell.font = SECTION_FONT
+        cell.fill = SECTION_FILL
+
+
+def write_pivot_data_row(ws, row, label, sheets, formula_fn, bold=False):
+    """formula_fn(sheet) -> formula string (SUMIF per sheet, dll). Kolom
+    TOTAL diisi SUM dari sel-sel per rekening di baris yang sama (bukan
+    dihitung ulang terpisah), supaya konsisten dan gampang dicek manual."""
+    ws.cell(row=row, column=1, value=label)
+    n = len(sheets)
+    for i, sheet in enumerate(sheets):
+        c = 2 + i
+        cell = ws.cell(row=row, column=c, value=formula_fn(sheet))
+        cell.number_format = NUMBER_FORMAT
+    total_col = 2 + n
+    ws.cell(row=row, column=total_col,
+            value=f"=SUM({col_letter(2)}{row}:{col_letter(1 + n)}{row})")
+    ws.cell(row=row, column=total_col).number_format = NUMBER_FORMAT
+    if bold:
+        for c in range(1, total_col + 1):
+            ws.cell(row=row, column=c).font = Font(bold=True)
+
+
+def write_pivot_subtotal_row(ws, row, label, sheets, ref_rows, bold=True):
+    """Subtotal per kolom = SUM baris-baris ref_rows di kolom yang sama.
+    Kolom TOTAL = SUM sel-sel per rekening di baris subtotal itu sendiri."""
+    ws.cell(row=row, column=1, value=label)
+    n = len(sheets)
+    for i in range(n):
+        c = 2 + i
+        cl = col_letter(c)
+        ws.cell(row=row, column=c, value=f"=SUM({cl}{ref_rows[0]}:{cl}{ref_rows[-1]})")
+        ws.cell(row=row, column=c).number_format = NUMBER_FORMAT
+    total_col = 2 + n
+    ws.cell(row=row, column=total_col,
+            value=f"=SUM({col_letter(2)}{row}:{col_letter(1 + n)}{row})")
+    ws.cell(row=row, column=total_col).number_format = NUMBER_FORMAT
+    if bold:
+        for c in range(1, total_col + 1):
+            ws.cell(row=row, column=c).font = Font(bold=True)
+
+
+def write_pivot_formula_row(ws, row, label, sheets, per_col_formula_fn, bold=False):
+    """Baris hasil kombinasi rumus antar-baris (mis. Laba = Pendapatan+Beban),
+    per_col_formula_fn(col_letter) -> formula string, dipakai sama persis
+    untuk tiap kolom rekening MAUPUN kolom TOTAL (referensi sel berbeda,
+    logika sama)."""
+    ws.cell(row=row, column=1, value=label)
+    n = len(sheets)
+    for i in range(n):
+        c = 2 + i
+        cl = col_letter(c)
+        ws.cell(row=row, column=c, value=per_col_formula_fn(cl))
+        ws.cell(row=row, column=c).number_format = NUMBER_FORMAT
+    total_col = 2 + n
+    ws.cell(row=row, column=total_col, value=per_col_formula_fn(col_letter(total_col)))
+    ws.cell(row=row, column=total_col).number_format = NUMBER_FORMAT
+    if bold:
+        for c in range(1, total_col + 1):
+            ws.cell(row=row, column=c).font = Font(bold=True)
+
+
+def sumif_one_sheet(sheet, last_row, category):
+    return (f"=SUMIF('{sheet}'!$C$2:$C${last_row},\"{category}\","
+            f"'{sheet}'!$J$2:$J${last_row})")
 
 
 def write_income_statement(wb, sheets_last_row, period_label):
@@ -701,150 +792,178 @@ def write_income_statement(wb, sheets_last_row, period_label):
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
+    sheets = list(sheets_last_row.keys())
     ws["A1"] = f"LAPORAN LABA RUGI - {period_label.upper()}"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = "Semua angka adalah rumus SUMIF beralamat absolut ke seluruh sheet rekening (termasuk Kasir)."
+    ws["A2"] = ("Pivot per rekening (rumus SUMIF beralamat absolut), kolom TOTAL paling kanan "
+                "= jumlah keseluruhan. Bandingkan antar kolom untuk menelusuri selisih per rekening.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     r = 4
-    ws.cell(row=r, column=1, value="PENDAPATAN")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_header(ws, r, sheets)
+    r += 1
+
+    write_pivot_section(ws, r, "PENDAPATAN", sheets)
     r += 1
     rev_rows = []
     for cat in INCOME_CATEGORIES_REVENUE:
-        ws.cell(row=r, column=1, value=cat)
-        ws.cell(row=r, column=2, value=sumif_formula(sheets_last_row, cat))
+        write_pivot_data_row(ws, r, cat, sheets,
+                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         rev_rows.append(r)
         r += 1
     total_rev_row = r
-    ws.cell(row=r, column=1, value="Total Pendapatan")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=SUM(B{rev_rows[0]}:B{rev_rows[-1]})")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_subtotal_row(ws, r, "Total Pendapatan", sheets, rev_rows)
     r += 2
 
-    ws.cell(row=r, column=1, value="BEBAN")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_section(ws, r, "BEBAN", sheets)
     r += 1
     exp_rows = []
     for cat in INCOME_CATEGORIES_EXPENSE:
-        ws.cell(row=r, column=1, value=cat)
-        # beban tersimpan sebagai debit negatif -> beri tanda kurung memakai ABS lewat rumus
-        ws.cell(row=r, column=2, value=sumif_formula(sheets_last_row, cat))
+        write_pivot_data_row(ws, r, cat, sheets,
+                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
     total_exp_row = r
-    ws.cell(row=r, column=1, value="Total Beban")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=SUM(B{exp_rows[0]}:B{exp_rows[-1]})")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_subtotal_row(ws, r, "Total Beban", sheets, exp_rows)
     r += 2
 
-    ws.cell(row=r, column=1, value="LAIN-LAIN (perlu verifikasi manual)")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_section(ws, r, "LAIN-LAIN (perlu verifikasi manual)", sheets)
     r += 1
     other_rows = []
     for cat in OTHER_CATEGORIES:
-        ws.cell(row=r, column=1, value=cat)
-        ws.cell(row=r, column=2, value=sumif_formula(sheets_last_row, cat))
+        write_pivot_data_row(ws, r, cat, sheets,
+                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         other_rows.append(r)
         r += 1
     total_other_row = r
-    ws.cell(row=r, column=1, value="Total Lain-lain")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=SUM(B{other_rows[0]}:B{other_rows[-1]})" if other_rows else "=0")
+    write_pivot_subtotal_row(ws, r, "Total Lain-lain", sheets, other_rows)
     r += 2
 
     net_row = r
-    ws.cell(row=r, column=1, value="LABA / RUGI BERSIH")
-    ws.cell(row=r, column=1).font = Font(bold=True, size=12)
-    ws.cell(row=r, column=2, value=f"=B{total_rev_row}+B{total_exp_row}+B{total_other_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True, size=12)
+    write_pivot_formula_row(
+        ws, r, "LABA / RUGI BERSIH", sheets,
+        lambda cl: f"={cl}{total_rev_row}+{cl}{total_exp_row}+{cl}{total_other_row}",
+        bold=True,
+    )
+    for c in range(1, pivot_total_col(sheets) + 1):
+        ws.cell(row=r, column=c).font = Font(bold=True, size=12)
 
     ws.column_dimensions["A"].width = 34
-    ws.column_dimensions["B"].width = 20
-    for row in ws.iter_rows(min_row=4, max_row=r, min_col=2, max_col=2):
-        for cell in row:
-            cell.number_format = "#,##0"
+    for i in range(len(sheets)):
+        ws.column_dimensions[col_letter(2 + i)].width = 16
+    ws.column_dimensions[col_letter(pivot_total_col(sheets))].width = 18
+    ws.freeze_panes = "B5"
     return ws, {"total_rev": total_rev_row, "total_exp": total_exp_row,
-                "total_other": total_other_row, "net": net_row, "sheet": name}
+                "total_other": total_other_row, "net": net_row, "sheet": name,
+                "sheets": sheets, "total_col": pivot_total_col(sheets)}
 
 
 # ---------------------------------------------------------------------------
 # Neraca (Balance Sheet)
 # ---------------------------------------------------------------------------
 
+TRANSFER_CATEGORY_TEXTS = [
+    "Pindah Rekening Internal",
+    "Pindang Rekening Internal",
+    "Transfer Internal",
+    "Transfer Lainnya",
+]
+
+
+def sumif_multi_one_sheet(sheet, last_row, categories):
+    parts = [
+        f"SUMIF('{sheet}'!$C$2:$C${last_row},\"{cat}\",'{sheet}'!$J$2:$J${last_row})"
+        for cat in categories
+    ]
+    return "=" + "+".join(parts)
+
+
 def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label):
     name = "Neraca"
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
+    sheets = list(sheets_last_row.keys())
     ws["A1"] = f"NERACA - PER {period_end_label.upper()}"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = "Saldo kas = rumus merujuk langsung ke sel Saldo Kumulatif terakhir tiap rekening."
+    ws["A2"] = ("Pivot per rekening, kolom TOTAL paling kanan = keseluruhan. Baris 'CEK KESEIMBANGAN' "
+                "dan 'Selisih Belum Terjelaskan' per kolom langsung menunjukkan rekening mana yang "
+                "selisih - lihat juga sheet Diagnostik Keseimbangan.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     r = 4
-    ws.cell(row=r, column=1, value="ASET (KAS & SETARA KAS)")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_header(ws, r, sheets)
     r += 1
-    asset_rows = []
-    for sheet, last_row in sheets_last_row.items():
-        ws.cell(row=r, column=1, value=sheet)
-        ws.cell(row=r, column=2, value=f"='{sheet}'!$K${last_row}")
-        asset_rows.append(r)
-        r += 1
-    total_asset_row = r
-    ws.cell(row=r, column=1, value="Total Aset")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=SUM(B{asset_rows[0]}:B{asset_rows[-1]})")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+
+    write_pivot_section(ws, r, "ASET (KAS & SETARA KAS)", sheets)
+    r += 1
+    kas_row = r
+    write_pivot_data_row(ws, r, "Kas & Setara Kas (Saldo Akhir)", sheets,
+                          lambda sheet: f"='{sheet}'!$K${sheets_last_row[sheet]}", bold=True)
+    total_asset_row = kas_row
     r += 2
 
-    ws.cell(row=r, column=1, value="EKUITAS")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_section(ws, r, "EKUITAS", sheets)
     r += 1
     saldo_awal_row = r
-    ws.cell(row=r, column=1, value="Saldo Awal Bulan (seluruh rekening)")
-    parts = [f"'{sheet}'!$K${row}" for sheet, row in opening_rows.items()]
-    ws.cell(row=r, column=2, value="=" + "+".join(parts))
+    write_pivot_data_row(ws, r, "Saldo Awal Bulan", sheets,
+                          lambda sheet: f"='{sheet}'!$K${opening_rows[sheet]}")
     r += 1
     modal_row = r
-    ws.cell(row=r, column=1, value="Modal & Setoran Pemilik (bulan ini)")
-    ws.cell(row=r, column=2, value=sumif_formula(sheets_last_row, "Modal & Setoran Pemilik"))
+    write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (bulan ini)", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Modal & Setoran Pemilik"))
     r += 1
     laba_row = r
-    ws.cell(row=r, column=1, value="Laba Bersih Bulan Ini")
-    ws.cell(row=r, column=2, value=f"='{income_ref['sheet']}'!$B${income_ref['net']}")
+    # kolom rekening di Neraca urutannya sama dengan di Laporan Laba Rugi
+    # (keduanya dari sheets_last_row.keys() yang sama), jadi tinggal pakai
+    # huruf kolom yang sama untuk menautkan baris LABA/RUGI BERSIH per rekening
+    write_pivot_formula_row(
+        ws, r, "Laba Bersih Bulan Ini", sheets,
+        lambda cl: f"='{income_ref['sheet']}'!{cl}{income_ref['net']}",
+    )
     r += 1
     total_equity_row = r
-    ws.cell(row=r, column=1, value="Total Ekuitas")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=B{saldo_awal_row}+B{modal_row}+B{laba_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_subtotal_row(ws, r, "Total Ekuitas", sheets, [saldo_awal_row, laba_row])
     r += 2
 
-    ws.cell(row=r, column=1, value="CEK KESEIMBANGAN (Aset - Ekuitas)")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=B{total_asset_row}-B{total_equity_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True)
-    ws.cell(row=r, column=3,
-            value='=IF(ABS(B' + str(r) + ')<1,"Balanced","Selisih - perlu telusur transfer/kasir")')
     balance_check_row = r
+    write_pivot_formula_row(
+        ws, r, "CEK KESEIMBANGAN (Aset - Ekuitas)", sheets,
+        lambda cl: f"={cl}{total_asset_row}-{cl}{total_equity_row}",
+        bold=True,
+    )
+    r += 1
+    transfer_row = r
+    write_pivot_data_row(ws, r, "Transfer Bersih (rekening ini, info)", sheets,
+                          lambda sheet: sumif_multi_one_sheet(sheet, sheets_last_row[sheet], TRANSFER_CATEGORY_TEXTS))
+    r += 1
+    residual_row = r
+    write_pivot_formula_row(
+        ws, r, "Selisih Belum Terjelaskan (Selisih - Transfer Bersih)", sheets,
+        lambda cl: f"={cl}{balance_check_row}-{cl}{transfer_row}",
+        bold=True,
+    )
+    r += 1
+    ws.cell(row=r, column=1,
+            value=("Transfer Bersih seharusnya saling menutup ~0 di kolom TOTAL (lihat sheet "
+                   "Rekonsiliasi kalau tidak). Per rekening wajar tidak 0 (rekening itu bisa jadi "
+                   "pengirim/penerima bersih bulan ini). Yang perlu ditelusuri adalah 'Selisih Belum "
+                   "Terjelaskan' - kalau besar di satu rekening, itu tandanya data di sheet rekening "
+                   "itu (lihat kolom L) yang bermasalah, bukan soal transfer."))
+    ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+    ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=pivot_total_col(sheets))
+    ws.row_dimensions[r].height = 48
 
-    ws.column_dimensions["A"].width = 34
-    ws.column_dimensions["B"].width = 20
-    ws.column_dimensions["C"].width = 34
-    for row in ws.iter_rows(min_row=4, max_row=r, min_col=2, max_col=2):
-        for cell in row:
-            cell.number_format = "#,##0"
+    ws.column_dimensions["A"].width = 38
+    for i in range(len(sheets)):
+        ws.column_dimensions[col_letter(2 + i)].width = 16
+    ws.column_dimensions[col_letter(pivot_total_col(sheets))].width = 18
+    ws.freeze_panes = "B5"
     return ws, {"total_asset": total_asset_row, "total_equity": total_equity_row,
-                "saldo_awal": saldo_awal_row, "balance_check": balance_check_row, "sheet": name}
+                "saldo_awal": saldo_awal_row, "balance_check": balance_check_row,
+                "transfer_row": transfer_row, "residual_row": residual_row,
+                "sheet": name, "sheets": sheets, "total_col": pivot_total_col(sheets)}
 
 
 # ---------------------------------------------------------------------------
@@ -856,69 +975,69 @@ def write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label):
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
+    sheets = list(sheets_last_row.keys())
     ws["A1"] = f"LAPORAN ARUS KAS - {period_label.upper()}"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = "Metode langsung (direct). Transfer antar rekening sendiri sengaja tidak dimasukkan karena saling menutup nol (lihat sheet Rekonsiliasi)."
+    ws["A2"] = ("Metode langsung, pivot per rekening. Transfer antar rekening sendiri sengaja tidak "
+                "dimasukkan karena saling menutup nol (lihat sheet Rekonsiliasi).")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     r = 4
-    ws.cell(row=r, column=1, value="ARUS KAS DARI AKTIVITAS OPERASI")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_header(ws, r, sheets)
+    r += 1
+
+    write_pivot_section(ws, r, "ARUS KAS DARI AKTIVITAS OPERASI", sheets)
     r += 1
     op_row = r
-    ws.cell(row=r, column=1, value="Laba Bersih Bulan Ini (basis kas)")
-    ws.cell(row=r, column=2, value=f"='{income_ref['sheet']}'!$B${income_ref['net']}")
+    write_pivot_formula_row(
+        ws, r, "Laba Bersih Bulan Ini (basis kas)", sheets,
+        lambda cl: f"='{income_ref['sheet']}'!{cl}{income_ref['net']}",
+    )
     r += 1
     total_op_row = r
-    ws.cell(row=r, column=1, value="Kas Bersih dari Operasi")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=B{op_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_subtotal_row(ws, r, "Kas Bersih dari Operasi", sheets, [op_row, op_row])
     r += 2
 
-    ws.cell(row=r, column=1, value="ARUS KAS DARI AKTIVITAS PENDANAAN")
-    ws.cell(row=r, column=1).font = SECTION_FONT
-    ws.cell(row=r, column=1).fill = SECTION_FILL
+    write_pivot_section(ws, r, "ARUS KAS DARI AKTIVITAS PENDANAAN", sheets)
     r += 1
     fin_row = r
-    ws.cell(row=r, column=1, value="Modal & Setoran Pemilik")
-    ws.cell(row=r, column=2, value=sumif_formula(sheets_last_row, "Modal & Setoran Pemilik"))
+    write_pivot_data_row(ws, r, "Modal & Setoran Pemilik", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Modal & Setoran Pemilik"))
     r += 1
     total_fin_row = r
-    ws.cell(row=r, column=1, value="Kas Bersih dari Pendanaan")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=B{fin_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_subtotal_row(ws, r, "Kas Bersih dari Pendanaan", sheets, [fin_row, fin_row])
     r += 2
 
     net_change_row = r
-    ws.cell(row=r, column=1, value="KENAIKAN (PENURUNAN) KAS BERSIH")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=B{total_op_row}+B{total_fin_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_formula_row(
+        ws, r, "KENAIKAN (PENURUNAN) KAS BERSIH", sheets,
+        lambda cl: f"={cl}{total_op_row}+{cl}{total_fin_row}",
+        bold=True,
+    )
     r += 1
     saldo_awal_row = r
-    ws.cell(row=r, column=1, value="Saldo Kas Awal Bulan")
-    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['saldo_awal']}")
+    write_pivot_formula_row(
+        ws, r, "Saldo Kas Awal Bulan", sheets,
+        lambda cl: f"='{balance_ref['sheet']}'!{cl}{balance_ref['saldo_awal']}",
+    )
     r += 1
     saldo_akhir_row = r
-    ws.cell(row=r, column=1, value="Saldo Kas Akhir Bulan")
-    ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"=B{net_change_row}+B{saldo_awal_row}")
-    ws.cell(row=r, column=2).font = Font(bold=True)
+    write_pivot_formula_row(
+        ws, r, "Saldo Kas Akhir Bulan", sheets,
+        lambda cl: f"={cl}{net_change_row}+{cl}{saldo_awal_row}",
+        bold=True,
+    )
     r += 1
-    ws.cell(row=r, column=1, value="Cek vs Total Aset di Neraca")
-    ws.cell(row=r, column=2, value=f"=B{saldo_akhir_row}-'{balance_ref['sheet']}'!$B${balance_ref['total_asset']}")
-    ws.cell(row=r, column=3,
-            value='=IF(ABS(B' + str(r) + ')<1,"Cocok dengan Neraca","Selisih - telusur transfer belum matched")')
+    write_pivot_formula_row(
+        ws, r, "Cek vs Total Aset di Neraca", sheets,
+        lambda cl: f"={cl}{saldo_akhir_row}-'{balance_ref['sheet']}'!{cl}{balance_ref['total_asset']}",
+    )
 
-    ws.column_dimensions["A"].width = 36
-    ws.column_dimensions["B"].width = 20
-    ws.column_dimensions["C"].width = 34
-    for row in ws.iter_rows(min_row=4, max_row=r, min_col=2, max_col=2):
-        for cell in row:
-            cell.number_format = "#,##0"
+    ws.column_dimensions["A"].width = 38
+    for i in range(len(sheets)):
+        ws.column_dimensions[col_letter(2 + i)].width = 16
+    ws.column_dimensions[col_letter(pivot_total_col(sheets))].width = 18
+    ws.freeze_panes = "B5"
     return ws
 
 
@@ -956,21 +1075,47 @@ def write_diagnostic_sheet(wb, sheets_last_row, balance_ref):
     ws.cell(row=r, column=1).font = SECTION_FONT
     ws.cell(row=r, column=1).fill = SECTION_FILL
     r += 1
-    ws.cell(row=r, column=1, value="Total Aset (Neraca)")
-    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['total_asset']}")
+    total_col_letter = col_letter(balance_ref["total_col"])
+    ws.cell(row=r, column=1, value="Total Aset (Neraca, kolom TOTAL)")
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!{total_col_letter}{balance_ref['total_asset']}")
     r += 1
-    ws.cell(row=r, column=1, value="Total Ekuitas (Neraca)")
-    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['total_equity']}")
+    ws.cell(row=r, column=1, value="Total Ekuitas (Neraca, kolom TOTAL)")
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!{total_col_letter}{balance_ref['total_equity']}")
     r += 1
     selisih_row = r
     ws.cell(row=r, column=1, value="Selisih (Aset - Ekuitas)")
     ws.cell(row=r, column=1).font = Font(bold=True)
-    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['balance_check']}")
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!{total_col_letter}{balance_ref['balance_check']}")
     ws.cell(row=r, column=2).font = Font(bold=True)
     r += 1
     ws.cell(row=r, column=1, value="Kemungkinan sumber #1: transfer belum matched (lihat sheet Rekonsiliasi bagian 1)")
     ws.cell(row=r, column=2, value="=COUNTIF(Rekonsiliasi!$K$6:$K$300,\"Needs manual verification\")")
     ws.cell(row=r, column=3, value="baris - buka sheet Rekonsiliasi, cari warna merah")
+    r += 2
+
+    ws.cell(row=r, column=1,
+            value="1b. SELISIH BELUM TERJELASKAN PER REKENING (dari sheet Neraca)")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    headers1b = ["Rekening", "Selisih Belum Terjelaskan (Rp)"]
+    hdr_row1b = r
+    for i, h in enumerate(headers1b, start=1):
+        ws.cell(row=hdr_row1b, column=i, value=h)
+    style_header(ws, hdr_row1b, len(headers1b))
+    r += 1
+    sheets_list = list(sheets_last_row.keys())
+    for i, sheet in enumerate(sheets_list):
+        cl = col_letter(2 + i)
+        ws.cell(row=r, column=1, value=sheet)
+        ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!{cl}{balance_ref['residual_row']}")
+        ws.cell(row=r, column=2).number_format = NUMBER_FORMAT
+        r += 1
+    ws.cell(row=r, column=1, value="TOTAL")
+    ws.cell(row=r, column=1).font = Font(bold=True)
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!{total_col_letter}{balance_ref['residual_row']}")
+    ws.cell(row=r, column=2).font = Font(bold=True)
+    ws.cell(row=r, column=2).number_format = NUMBER_FORMAT
     r += 2
 
     ws.cell(row=r, column=1, value="2. PENYIMPANGAN URUTAN DATA PER REKENING (Kolom K vs Kolom F)")
