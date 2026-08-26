@@ -39,6 +39,8 @@ SECTION_FONT = Font(bold=True)
 HIGH_FILL = PatternFill("solid", fgColor="C6EFCE")
 MED_FILL = PatternFill("solid", fgColor="FFEB9C")
 LOW_FILL = PatternFill("solid", fgColor="FFC7CE")
+DATE_FORMAT = "d-mmm-yy"
+NUMBER_FORMAT = "#,##0"
 THIN = Side(style="thin", color="D1D5DB")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
@@ -452,15 +454,20 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
     for m in matches:
         ws.cell(row=r, column=1, value=m.src.sheet)
         ws.cell(row=r, column=2, value=f"='{m.src.sheet}'!$A${m.src.row}")
+        ws.cell(row=r, column=2).number_format = DATE_FORMAT
         ws.cell(row=r, column=3, value=f"='{m.src.sheet}'!$B${m.src.row}")
         ws.cell(row=r, column=4, value=f"='{m.src.sheet}'!${'D' if m.src.debit else 'E'}${m.src.row}")
+        ws.cell(row=r, column=4).number_format = NUMBER_FORMAT
         if m.dst:
             ws.cell(row=r, column=5, value=m.dst.sheet)
             ws.cell(row=r, column=6, value=f"='{m.dst.sheet}'!$A${m.dst.row}")
+            ws.cell(row=r, column=6).number_format = DATE_FORMAT
             ws.cell(row=r, column=7, value=f"='{m.dst.sheet}'!$B${m.dst.row}")
             ws.cell(row=r, column=8, value=f"='{m.dst.sheet}'!${'D' if m.dst.debit else 'E'}${m.dst.row}")
+            ws.cell(row=r, column=8).number_format = NUMBER_FORMAT
             ws.cell(row=r, column=9, value=m.date_diff)
             ws.cell(row=r, column=10, value=round(m.nominal_diff, 2))
+            ws.cell(row=r, column=10).number_format = NUMBER_FORMAT
         else:
             ws.cell(row=r, column=5, value="(belum ditemukan)")
         ws.cell(row=r, column=11, value=m.confidence)
@@ -493,12 +500,17 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
         src, a, b = cm["src"], cm["parts"][0], cm["parts"][1]
         ws.cell(row=r, column=1, value=src.sheet)
         ws.cell(row=r, column=2, value=f"='{src.sheet}'!$A${src.row}")
+        ws.cell(row=r, column=2).number_format = DATE_FORMAT
         ws.cell(row=r, column=3, value=f"='{src.sheet}'!${'D' if src.debit else 'E'}${src.row}")
+        ws.cell(row=r, column=3).number_format = NUMBER_FORMAT
         ws.cell(row=r, column=4, value=f"{a.sheet} (brs {a.row})")
         ws.cell(row=r, column=5, value=f"='{a.sheet}'!${'D' if a.debit else 'E'}${a.row}")
+        ws.cell(row=r, column=5).number_format = NUMBER_FORMAT
         ws.cell(row=r, column=6, value=f"{b.sheet} (brs {b.row})")
         ws.cell(row=r, column=7, value=f"='{b.sheet}'!${'D' if b.debit else 'E'}${b.row}")
+        ws.cell(row=r, column=7).number_format = NUMBER_FORMAT
         ws.cell(row=r, column=8, value=round(cm["diff"], 2))
+        ws.cell(row=r, column=8).number_format = NUMBER_FORMAT
         ws.cell(row=r, column=9, value=cm["confidence"])
         ws.cell(row=r, column=10, value=cm["reasoning"])
         for c in range(1, len(headers1b) + 1):
@@ -527,9 +539,12 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
     for t, reasons in minus_flags:
         ws.cell(row=r, column=1, value=t.sheet)
         ws.cell(row=r, column=2, value=f"='{t.sheet}'!$A${t.row}")
+        ws.cell(row=r, column=2).number_format = DATE_FORMAT
         ws.cell(row=r, column=3, value=f"='{t.sheet}'!$B${t.row}")
         ws.cell(row=r, column=4, value=f"='{t.sheet}'!${'D' if t.debit else 'E'}${t.row}")
+        ws.cell(row=r, column=4).number_format = NUMBER_FORMAT
         ws.cell(row=r, column=5, value=f"='{t.sheet}'!$F${t.row}")
+        ws.cell(row=r, column=5).number_format = NUMBER_FORMAT
         ws.cell(row=r, column=6, value=" | ".join(reasons))
         for c in range(1, len(headers2) + 1):
             cell = ws.cell(row=r, column=c)
