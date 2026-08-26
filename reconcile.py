@@ -364,22 +364,24 @@ def find_split_merge_matches(results):
 
 
 def find_minus_flags(all_txns_by_sheet):
-    """Kumpulkan indikasi 'minus': saldo kumulatif negatif, kategori
+    """Kumpulkan indikasi 'minus' yang perlu verifikasi manual: kategori
     Tip/Minus/Lebih, atau baris berpenanda flag (⚑) di keterangan.
 
-    Catatan: cross-check baris-per-baris terhadap saldo hasil rekonstruksi
-    (opening + akumulasi nominal) sengaja TIDAK dipakai di sini karena pada
+    Catatan: saldo kumulatif negatif di tengah data TIDAK dianggap indikasi
+    minus - itu cuma efek sementara dari urutan penulisan transaksi (baris
+    tertulis belum tentu urut kronologis sempurna), bukan minus riil.
+    Kesehatan saldo yang sebenarnya dicek di level akhir bulan lewat kolom
+    K (Saldo Kumulatif Rekonstruksi) tiap sheet dan sheet Neraca.
+
+    Cross-check baris-per-baris terhadap saldo hasil rekonstruksi (opening +
+    akumulasi nominal) juga sengaja TIDAK dipakai di sini karena pada
     sebagian sheet sumber (mis. BCA) kolom Saldo Kumulatif tidak selalu
     diisi berurutan per baris (beberapa transaksi bertanggal sama dikelompokkan
-    dulu), sehingga cross-check per baris menghasilkan banyak false positive.
-    Pengecekan keseimbangan yang valid tetap dilakukan di level bulanan lewat
-    kolom K (Saldo Kumulatif Rekonstruksi) tiap sheet dan sheet Neraca."""
+    dulu), sehingga cross-check per baris menghasilkan banyak false positive."""
     flags = []
     for sheet, txns in all_txns_by_sheet.items():
         for t in txns:
             reasons = []
-            if t.saldo is not None and t.saldo < 0:
-                reasons.append(f"Saldo kumulatif negatif (Rp{t.saldo:,.0f}).".replace(",", "."))
             if "tip/minus/lebih" in (t.kategori or "").lower():
                 reasons.append("Kategori Tip/Minus/Lebih (selisih kas fisik vs catatan).")
             if isinstance(t.ket, str) and "⚑" in t.ket:
@@ -859,7 +861,15 @@ def detect_period_end_date(all_txns, year_month_label):
 # Orkestrasi utama
 # ---------------------------------------------------------------------------
 
-def run_reconciliation(input_path, output_path):
+def run_reconciliation(input_path, output_path, with_statements=False):
+    """Fungsi utama: rekonsiliasi antar rekening (pencocokan transfer,
+    deteksi split/merge, indikasi minus/selisih). Ini yang jalan secara
+    default setiap ada file masuk.
+
+    with_statements=True akan menambahkan 3 sheet laporan keuangan
+    (Laba Rugi, Neraca, Arus Kas) - dibuat opsional supaya proses default
+    tetap ringan dan fokus ke rekonsiliasi saja, sesuai kebutuhan.
+    """
     wb = openpyxl.load_workbook(input_path)
     account_sheets = [s for s in wb.sheetnames if s != "Rekonsiliasi"]
 
@@ -893,16 +903,19 @@ def run_reconciliation(input_path, output_path):
         if m.dst is not None or id(m.src) not in combo_covered_ids
     ]
 
-    period_label = detect_period_label(all_txns)
-    period_end_label = detect_period_end_date(all_txns, period_label)
-
     write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags)
-    income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label)
-    balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label)
-    write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
+
+    order = list(account_sheets) + ["Rekonsiliasi"]
+
+    if with_statements:
+        period_label = detect_period_label(all_txns)
+        period_end_label = detect_period_end_date(all_txns, period_label)
+        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label)
+        balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label)
+        write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
+        order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas"]
 
     # urutan sheet: rekening dulu, lalu laporan
-    order = account_sheets + ["Rekonsiliasi", income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas"]
     wb._sheets = [wb[s] for s in order]
 
     wb.save(output_path)
@@ -914,6 +927,7 @@ def run_reconciliation(input_path, output_path):
         "n_transfer_split_merge": len(combo_matches),
         "n_transfer_unmatched": sum(1 for m in matches_section1 if m.dst is None),
         "n_minus_flags": len(minus_flags),
+        "with_statements": with_statements,
     }
     return summary
 
@@ -922,5 +936,6 @@ if __name__ == "__main__":
     import sys
     inp = sys.argv[1] if len(sys.argv) > 1 else "Recon_Januari_2025.xlsx"
     out = sys.argv[2] if len(sys.argv) > 2 else "Recon_Januari_2025_HASIL.xlsx"
-    s = run_reconciliation(inp, out)
+    with_stmt = "--laporan" in sys.argv
+    s = run_reconciliation(inp, out, with_statements=with_stmt)
     print(s)
