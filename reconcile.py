@@ -54,6 +54,19 @@ TRANSFER_KEYWORDS = [
     "transfer lainnya",
 ]
 
+# Kata kunci di KETERANGAN (bukan kategori) yang juga menandakan transfer
+# antar rekening sendiri, buat jaga-jaga kalau kategorinya salah/tidak
+# konsisten diisi di sumber data (mis. "Setoran Tunai" kadang tidak diberi
+# kategori "Pindah/Transfer Internal" padahal itu kasir->bank sendiri).
+# Tidak dipakai kalau kategorinya sudah eksplisit "Modal & Setoran Pemilik"
+# (setoran modal dari luar, bukan pindah antar rekening sendiri).
+DESC_TRANSFER_KEYWORDS = [
+    "setoran tunai",
+    "setor tunai",
+    "pindah rekening",
+    "transfer internal",
+]
+
 # Kategori setoran/penarikan modal pemilik -> masuk Neraca (ekuitas),
 # bukan Laba Rugi.
 CAPITAL_KEYWORDS = [
@@ -102,7 +115,15 @@ class Txn:
     @property
     def is_transfer(self):
         k = (self.kategori or "").lower()
-        return any(kw in k for kw in TRANSFER_KEYWORDS)
+        if any(kw in k for kw in TRANSFER_KEYWORDS):
+            return True
+        # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
+        # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
+        # bukan pindah antar rekening sendiri)
+        if any(kw in k for kw in CAPITAL_KEYWORDS):
+            return False
+        d = (self.desc or "").lower()
+        return any(kw in d for kw in DESC_TRANSFER_KEYWORDS)
 
     @property
     def is_capital(self):
