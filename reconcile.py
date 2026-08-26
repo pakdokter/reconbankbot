@@ -270,17 +270,30 @@ def find_matches(all_txns, sheet_names):
             matched_dst_ids.add(id(dst))
             consumed_ids.add(id(src))
             consumed_ids.add(id(dst))
+            is_fliptech = (
+                "fliptech" in (src.desc or "").lower()
+                or "fliptech" in (dst.desc or "").lower()
+                or "fliptech" in (src.ket or "").lower()
+                or "fliptech" in (dst.ket or "").lower()
+            )
             if nominal_diff == 0 and date_diff == 0:
                 conf = "High"
                 reason = "Nominal dan tanggal sama persis di kedua rekening."
             elif nominal_diff == 0 and date_diff <= 3:
                 conf = "High"
                 reason = f"Nominal sama persis, selisih tanggal {date_diff} hari (wajar untuk settlement bank)."
+            elif is_fliptech and nominal_diff <= FLIPTECH_FEE_THRESHOLD:
+                conf = "High"
+                reason = (
+                    f"Transaksi via Fliptech, selisih nominal Rp{nominal_diff:,.0f} "
+                    f"dipastikan biaya admin transfer (bukan keraguan), selisih tanggal "
+                    f"{date_diff} hari."
+                ).replace(",", ".")
             elif nominal_diff > 0 and nominal_diff <= TOLERANSI_NOMINAL_ABS:
                 conf = "Medium"
                 reason = (
-                    f"Selisih nominal Rp{nominal_diff:,.0f} kemungkinan biaya admin/transfer "
-                    f"(mis. via Fliptech), selisih tanggal {date_diff} hari."
+                    f"Selisih nominal Rp{nominal_diff:,.0f} kemungkinan biaya admin/transfer, "
+                    f"selisih tanggal {date_diff} hari."
                 ).replace(",", ".")
             elif date_diff > 3:
                 conf = "Medium"
@@ -365,6 +378,8 @@ def find_split_merge_matches(results):
     return combos
 
 
+FLIPTECH_FEE_THRESHOLD = 2000  # selisih <= ini pada transaksi via Fliptech
+                                 # dipastikan biaya admin, bukan keraguan
 TIP_MINUS_THRESHOLD = 100000  # Tip/Minus/Lebih di bawah ini dianggap wajar,
                                 # tidak perlu verifikasi manual
 
