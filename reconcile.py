@@ -363,11 +363,20 @@ def find_split_merge_matches(results):
     return combos
 
 
+TIP_MINUS_THRESHOLD = 100000  # Tip/Minus/Lebih di bawah ini dianggap wajar,
+                                # tidak perlu verifikasi manual
+
+
 def find_minus_flags(all_txns_by_sheet):
     """Kumpulkan indikasi 'minus' yang perlu verifikasi manual: kategori
-    Tip/Minus/Lebih, atau baris berpenanda flag (⚑) di keterangan.
+    Tip/Minus/Lebih dengan nominal > Rp100.000, atau baris berpenanda flag
+    (⚑) di keterangan.
 
-    Catatan: saldo kumulatif negatif di tengah data TIDAK dianggap indikasi
+    Catatan: Tip/Minus/Lebih dengan nominal <= Rp100.000 dianggap valid
+    (wajar terjadi dari pembulatan/kembalian kasir sehari-hari), tidak perlu
+    ditandai untuk verifikasi manual.
+
+    Saldo kumulatif negatif di tengah data juga TIDAK dianggap indikasi
     minus - itu cuma efek sementara dari urutan penulisan transaksi (baris
     tertulis belum tentu urut kronologis sempurna), bukan minus riil.
     Kesehatan saldo yang sebenarnya dicek di level akhir bulan lewat kolom
@@ -382,8 +391,12 @@ def find_minus_flags(all_txns_by_sheet):
     for sheet, txns in all_txns_by_sheet.items():
         for t in txns:
             reasons = []
-            if "tip/minus/lebih" in (t.kategori or "").lower():
-                reasons.append("Kategori Tip/Minus/Lebih (selisih kas fisik vs catatan).")
+            if "tip/minus/lebih" in (t.kategori or "").lower() and abs(t.nominal) > TIP_MINUS_THRESHOLD:
+                reasons.append(
+                    f"Kategori Tip/Minus/Lebih dengan nominal Rp{abs(t.nominal):,.0f} "
+                    f"(di atas ambang wajar Rp{TIP_MINUS_THRESHOLD:,.0f})."
+                    .replace(",", ".")
+                )
             if isinstance(t.ket, str) and "⚑" in t.ket:
                 reasons.append(f"Ditandai perlu verifikasi manual: {t.ket}")
             if reasons:
