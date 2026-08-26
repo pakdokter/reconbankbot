@@ -212,6 +212,7 @@ class Match:
     reasoning: str = ""
     date_diff: int = None
     nominal_diff: float = None
+    is_fliptech: bool = False
 
 
 def days_between(a, b):
@@ -341,7 +342,7 @@ def find_matches(all_txns, sheet_names):
                     conf = "Medium"
             results.append(
                 Match(src=src, dst=dst, confidence=conf, reasoning=reason,
-                      date_diff=date_diff, nominal_diff=nominal_diff)
+                      date_diff=date_diff, nominal_diff=nominal_diff, is_fliptech=is_fliptech)
             )
         else:
             results.append(
@@ -497,6 +498,7 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
         "Rekening Asal", "Tanggal Asal", "Keterangan Asal", "Nominal Asal",
         "Rekening Tujuan", "Tanggal Tujuan", "Keterangan Tujuan", "Nominal Tujuan",
         "Selisih Tanggal (hari)", "Selisih Nominal (Rp)", "Confidence", "Alasan Audit",
+        "Via Fliptech?", "Rekening Penanggung Biaya", "Biaya Admin Teridentifikasi (Rp)",
     ]
     hdr_row = r
     for i, h in enumerate(headers, start=1):
@@ -519,12 +521,27 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
             ws.cell(row=r, column=8, value=f"='{m.dst.sheet}'!${'D' if m.dst.debit else 'E'}${m.dst.row}")
             ws.cell(row=r, column=8).number_format = NUMBER_FORMAT
             ws.cell(row=r, column=9, value=m.date_diff)
-            ws.cell(row=r, column=10, value=round(m.nominal_diff, 2))
+            # Selisih Nominal dibuat rumus (bukan angka mati) supaya tetap
+            # akurat kalau nominal di sheet rekening diedit ulang
+            ws.cell(row=r, column=10, value=f"=ABS(ABS($D{r})-ABS($H{r}))")
             ws.cell(row=r, column=10).number_format = NUMBER_FORMAT
         else:
             ws.cell(row=r, column=5, value="(belum ditemukan)")
         ws.cell(row=r, column=11, value=m.confidence)
         ws.cell(row=r, column=12, value=m.reasoning)
+        # kolom biaya admin (auto): dipakai Laporan Laba Rugi untuk membukukan
+        # selisih transfer via Fliptech sebagai beban riil, bukan dibiarkan
+        # menghilang sebagai selisih Neraca yang perlu intervensi manual
+        ws.cell(row=r, column=13, value=m.is_fliptech if m.dst else False)
+        if m.dst:
+            fee_payer = m.src.sheet if m.src.debit else m.dst.sheet
+            ws.cell(row=r, column=14, value=fee_payer)
+            ws.cell(row=r, column=15,
+                    value=f'=IF(AND($M{r}=TRUE,$H{r}<>""),ABS(ABS($D{r})-ABS($H{r})),0)')
+        else:
+            ws.cell(row=r, column=14, value="-")
+            ws.cell(row=r, column=15, value=0)
+        ws.cell(row=r, column=15).number_format = NUMBER_FORMAT
         fill = conf_fill(m.confidence)
         for c in range(1, len(headers) + 1):
             cell = ws.cell(row=r, column=c)
@@ -533,6 +550,8 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
         ws.cell(row=r, column=11).fill = fill
         r += 1
 
+    section1_data_start = hdr_row + 1
+    section1_last_row = max(r - 1, section1_data_start)  # dipakai Laporan Laba Rugi (SUMIFS biaya admin)
     r += 1
     # --- Bagian 1b: transfer terpecah / tergabung (split & merge) ---
     ws.cell(row=r, column=1, value="1b. TRANSFER TERPECAH / TERGABUNG (SPLIT & MERGE)")
@@ -606,11 +625,11 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
         ws.cell(row=r, column=6).fill = LOW_FILL
         r += 1
 
-    widths = [22, 12, 26, 14, 22, 12, 26, 14, 10, 14, 14, 40]
+    widths = [22, 12, 26, 14, 22, 12, 26, 14, 10, 14, 14, 40, 12, 22, 20]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A6"
-    return ws
+    return ws, {"data_start": section1_data_start, "data_end": section1_last_row}
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +806,7 @@ def sumif_one_sheet(sheet, last_row, category):
             f"'{sheet}'!$J$2:$J${last_row})")
 
 
-def write_income_statement(wb, sheets_last_row, period_label):
+def write_income_statement(wb, sheets_last_row, period_label, recon_range):
     name = "Laporan Laba Rugi"
     if name in wb.sheetnames:
         del wb[name]
@@ -823,6 +842,19 @@ def write_income_statement(wb, sheets_last_row, period_label):
                               lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
+    # Biaya admin transfer (mis. via Fliptech) yang terdeteksi otomatis di
+    # Rekonsiliasi (kolom N/O) - dibukukan sebagai beban riil di sini, bukan
+    # dibiarkan hilang jadi selisih Neraca yang butuh koreksi manual tiap bulan
+    fee_row = r
+    write_pivot_data_row(
+        ws, r, "Biaya Admin Transfer (auto-terdeteksi dari Rekonsiliasi)", sheets,
+        lambda sheet: (
+            f"=-SUMIFS('Rekonsiliasi'!$O${recon_range['data_start']}:$O${recon_range['data_end']},"
+            f"'Rekonsiliasi'!$N${recon_range['data_start']}:$N${recon_range['data_end']},\"{sheet}\")"
+        ),
+    )
+    exp_rows.append(r)
+    r += 1
     total_exp_row = r
     write_pivot_subtotal_row(ws, r, "Total Beban", sheets, exp_rows)
     r += 2
@@ -878,7 +910,7 @@ def sumif_multi_one_sheet(sheet, last_row, categories):
     return "=" + "+".join(parts)
 
 
-def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label):
+def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label, recon_range):
     name = "Neraca"
     if name in wb.sheetnames:
         del wb[name]
@@ -934,8 +966,18 @@ def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_en
     )
     r += 1
     transfer_row = r
-    write_pivot_data_row(ws, r, "Transfer Bersih (rekening ini, info)", sheets,
-                          lambda sheet: sumif_multi_one_sheet(sheet, sheets_last_row[sheet], TRANSFER_CATEGORY_TEXTS))
+    # Transfer Bersih murni (SUMIF kategori transfer) DITAMBAH biaya admin
+    # yang sudah "dipisahkan" jadi beban riil di Laba Rugi (baris Biaya Admin
+    # Transfer) - supaya baris ini hanya berisi porsi transfer yang benar
+    # dua sisinya matched, bukan lagi bercampur dengan biaya admin
+    write_pivot_data_row(
+        ws, r, "Transfer Bersih (rekening ini, info)", sheets,
+        lambda sheet: (
+            f"={sumif_multi_one_sheet(sheet, sheets_last_row[sheet], TRANSFER_CATEGORY_TEXTS)[1:]}"
+            f"+SUMIFS('Rekonsiliasi'!$O${recon_range['data_start']}:$O${recon_range['data_end']},"
+            f"'Rekonsiliasi'!$N${recon_range['data_start']}:$N${recon_range['data_end']},\"{sheet}\")"
+        ),
+    )
     r += 1
     residual_row = r
     write_pivot_formula_row(
@@ -1256,7 +1298,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         if m.dst is not None or id(m.src) not in combo_covered_ids
     ]
 
-    write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags)
+    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags)
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
@@ -1264,8 +1306,8 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     period_end_label = detect_period_end_date(all_txns, period_label)
 
     if with_statements:
-        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label)
-        balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label)
+        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label, recon_range)
+        balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label, recon_range)
         write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
         write_diagnostic_sheet(wb, sheets_last_row, balance_ref)
         order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas", "Diagnostik Keseimbangan"]
