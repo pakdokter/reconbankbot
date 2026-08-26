@@ -1,21 +1,31 @@
 # Bot Rekonsiliasi Stoa Space
 
 Bot Telegram baru (terpisah dari stoabot dan bank-statement-bot). Terima satu
-file xlsx gabungan (output bank-statement-bot: 1 sheet per rekening + Kasir),
-lalu hasilkan:
+file xlsx gabungan (output bank-statement-bot: 1 sheet per rekening + Kasir).
 
+**Fungsi utama (default, selalu jalan): rekonsiliasi saja.**
 - **Rekonsiliasi**: pencocokan transfer antar rekening (termasuk yang
   terpecah/digabung), plus daftar indikasi minus/selisih kas yang perlu
   verifikasi manual. Setiap baris confidence: High/Medium/Low/Needs manual
   verification, dengan alasan audit.
-- **Laporan Laba Rugi**, **Neraca**, **Laporan Arus Kas**: seluruhnya rumus
-  Excel (SUMIF, referensi sel) beralamat absolut ke sheet rekening asli -
-  bukan angka hasil hitung Python yang ditulis mati. Kalau kamu edit angka di
-  sheet rekening, laporan ikut update begitu file dibuka di Excel.
+
+**Laporan keuangan (Laba Rugi / Neraca / Arus Kas): opsional, hanya keluar
+kalau ditrigger.** Dua cara trigger:
+1. Tambahkan kata "laporan" (atau "lengkap"/"statement"/"financial") di
+   caption waktu upload file.
+2. Upload file dulu (dapat hasil recon-only), lalu kirim `/laporan` - bot
+   proses ulang file yang sama tanpa perlu upload ulang.
+
+Kalau ditrigger, laporan keuangan seluruhnya rumus Excel (SUMIF, referensi
+sel) beralamat absolut ke sheet rekening asli - bukan angka hasil hitung
+Python yang ditulis mati.
 
 ## Struktur
 
-- `reconcile.py` - mesin inti (bisa dipakai standalone: `python reconcile.py input.xlsx output.xlsx`)
+- `reconcile.py` - mesin inti. Fungsi `run_reconciliation(input, output,
+  with_statements=False)`. CLI: `python reconcile.py input.xlsx output.xlsx`
+  (recon-only) atau tambah `--laporan` di akhir buat sertakan 3 laporan
+  keuangan.
 - `bot.py` - wrapper Telegram (python-telegram-bot v21, polling)
 - `requirements.txt`
 
@@ -59,12 +69,14 @@ lalu hasilkan:
 
 ## Belum dikerjakan (langkah selanjutnya)
 
-- ~~Auto-detect nama bulan/tahun dari data~~ - selesai, judul laporan
-  sekarang ambil dari tanggal transaksi paling banyak muncul di data
-  (`detect_period_label`), bukan hardcode.
+- ~~Auto-detect nama bulan/tahun dari data~~ - selesai.
+- ~~Pisahkan recon dari laporan keuangan~~ - selesai, laporan keuangan jadi
+  opsional (trigger caption/`/laporan`), default cuma rekonsiliasi.
 - Simpan histori (Postgres) supaya bisa lintas bulan (deteksi delayed
   settlement yang baru settle bulan berikutnya, sesuai prinsip audit
   "trace beyond month boundaries" - saat ini tracing hanya sebatas data
   yang ada di satu file yang diupload).
 - Belum ada testing dengan format sheet lain di luar contoh yang dikasih
   (mis. kalau ada rekening pinjaman/loan beneran, atau modal keluar/prive).
+- Cache upload di `/tmp` akan hilang tiap Railway restart worker - kalau
+  sering restart, pertimbangkan simpan cache ke storage yang persisten.
