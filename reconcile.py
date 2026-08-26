@@ -624,8 +624,11 @@ def add_helper_column(ws, last_row):
     K = Saldo Kumulatif Rekonstruksi (dihitung ulang dari saldo awal +
         akumulasi nominal, sehingga selalu terisi walau kolom F/Saldo
         Kumulatif aslinya bolong-bolong di sebagian baris)
-    L = Selisih vs Saldo Tercatat (cross-check audit: harus 0 setiap kali
-        kolom F terisi; kalau tidak, ada transaksi yang lolos/salah catat)
+    L = Selisih vs Saldo Tercatat (alat bantu telusur/audit: harus 0 setiap
+        kali kolom F terisi; kalau tidak 0, baris-baris sebelumnya di sheet
+        ini kemungkinan TIDAK berurutan secara kronologis terhadap kolom
+        Saldo Kumulatif aslinya - baris dengan selisih besar ditandai warna
+        kuning otomatis, dan dirangkum di sheet Diagnostik Keseimbangan)
     """
     for col, title in ((10, "Nominal Bersih (Debit atau Kredit)"),
                        (11, "Saldo Kumulatif (Rekonstruksi)"),
@@ -643,10 +646,22 @@ def add_helper_column(ws, last_row):
         else:
             ws.cell(row=row, column=11, value=f"=$K{row - 1}+$J{row}")
         ws.cell(row=row, column=12,
-                value=f'=IF($F{row}<>"",$K{row}-$F{row},"")')
+                value=f'=IF($F{row}<>"",$K{row}-$F{row},0)')
 
     for col, width in ((10, 26), (11, 28), (12, 22)):
         ws.column_dimensions[get_column_letter(col)].width = width
+
+    # highlight visual: baris dengan penyimpangan signifikan (>Rp1.000)
+    # antara saldo rekonstruksi dan saldo tercatat - penanda cepat untuk
+    # menelusuri baris mana yang bikin data tidak berurutan/tidak konsisten
+    from openpyxl.formatting.rule import CellIsRule
+    rng = f"L2:L{last_row}"
+    ws.conditional_formatting.add(
+        rng, CellIsRule(operator="greaterThan", formula=["1000"], fill=MED_FILL)
+    )
+    ws.conditional_formatting.add(
+        rng, CellIsRule(operator="lessThan", formula=["-1000"], fill=MED_FILL)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -907,6 +922,114 @@ def write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label):
     return ws
 
 
+# ---------------------------------------------------------------------------
+# Diagnostik Keseimbangan - alat telusur kalau Neraca/Arus Kas selisih
+# ---------------------------------------------------------------------------
+
+def write_diagnostic_sheet(wb, sheets_last_row, balance_ref):
+    """Sheet khusus buat menelusuri KENAPA CEK KESEIMBANGAN di Neraca tidak
+    nol. Dua kemungkinan penyebab yang paling sering terjadi:
+    1. Transfer antar rekening yang belum matched (lihat sheet Rekonsiliasi
+       bagian 1) - nilainya tidak ikut dihitung di Laba Rugi/Ekuitas, tapi
+       tetap mempengaruhi saldo kas riil.
+    2. Baris-baris di sheet rekening TIDAK berurutan kronologis terhadap
+       kolom Saldo Kumulatif aslinya (kolom F), sehingga saldo hasil
+       rekonstruksi (kolom K) menyimpang dari saldo tercatat. Bagian ini
+       menunjukkan tepat di rekening mana dan seberapa besar penyimpangan
+       itu terjadi, lewat kolom L (Selisih vs Saldo Tercatat) di tiap sheet
+       rekening."""
+    name = "Diagnostik Keseimbangan"
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    ws["A1"] = "DIAGNOSTIK KESEIMBANGAN - ALAT TELUSUR SELISIH"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = (
+        "Dipakai kalau baris 'CEK KESEIMBANGAN' di Neraca tidak nol. "
+        "Cek dua bagian di bawah: transfer yang belum matched (sheet "
+        "Rekonsiliasi bagian 1), dan penyimpangan urutan data per rekening."
+    )
+    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
+
+    r = 4
+    ws.cell(row=r, column=1, value="1. RINGKASAN KESEIMBANGAN")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    ws.cell(row=r, column=1, value="Total Aset (Neraca)")
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['total_asset']}")
+    r += 1
+    ws.cell(row=r, column=1, value="Total Ekuitas (Neraca)")
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['total_equity']}")
+    r += 1
+    selisih_row = r
+    ws.cell(row=r, column=1, value="Selisih (Aset - Ekuitas)")
+    ws.cell(row=r, column=1).font = Font(bold=True)
+    ws.cell(row=r, column=2, value=f"='{balance_ref['sheet']}'!$B${balance_ref['balance_check']}")
+    ws.cell(row=r, column=2).font = Font(bold=True)
+    r += 1
+    ws.cell(row=r, column=1, value="Kemungkinan sumber #1: transfer belum matched (lihat sheet Rekonsiliasi bagian 1)")
+    ws.cell(row=r, column=2, value="=COUNTIF(Rekonsiliasi!$K$6:$K$300,\"Needs manual verification\")")
+    ws.cell(row=r, column=3, value="baris - buka sheet Rekonsiliasi, cari warna merah")
+    r += 2
+
+    ws.cell(row=r, column=1, value="2. PENYIMPANGAN URUTAN DATA PER REKENING (Kolom K vs Kolom F)")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    headers = [
+        "Rekening", "Jumlah Baris Menyimpang (>Rp1rb)", "Selisih Maksimum (Rp)",
+        "Selisih di Baris Terakhir (Rp)", "Baris Pertama Menyimpang", "Keterangan Baris Itu",
+    ]
+    hdr_row = r
+    for i, h in enumerate(headers, start=1):
+        ws.cell(row=hdr_row, column=i, value=h)
+    style_header(ws, hdr_row, len(headers))
+    r += 1
+    for sheet, last_row in sheets_last_row.items():
+        rng_l = f"'{sheet}'!$L$2:$L${last_row}"
+        rng_a = f"'{sheet}'!$A$2:$A${last_row}"
+        rng_c = f"'{sheet}'!$B$2:$B${last_row}"
+        ws.cell(row=r, column=1, value=sheet)
+        ws.cell(row=r, column=2, value=f"=COUNTIF({rng_l},\">1000\")+COUNTIF({rng_l},\"<-1000\")")
+        ws.cell(row=r, column=3, value=f"=SUMPRODUCT(MAX(ABS({rng_l})))")
+        ws.cell(row=r, column=3).number_format = NUMBER_FORMAT
+        ws.cell(row=r, column=4, value=f"='{sheet}'!$L${last_row}")
+        ws.cell(row=r, column=4).number_format = NUMBER_FORMAT
+        ws.cell(row=r, column=5,
+                value=(f'=IFERROR(INDEX({rng_a},MATCH(TRUE,INDEX(ABS({rng_l})>1000,0),0)),'
+                       f'"Tidak ada penyimpangan signifikan")'))
+        ws.cell(row=r, column=5).number_format = DATE_FORMAT
+        ws.cell(row=r, column=6,
+                value=(f'=IFERROR(INDEX({rng_c},MATCH(TRUE,INDEX(ABS({rng_l})>1000,0),0)),"-")'))
+        for c in range(1, len(headers) + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.border = BORDER
+            cell.alignment = Alignment(vertical="top", wrap_text=(c == 6))
+        r += 1
+
+    r += 1
+    ws.cell(row=r, column=1,
+            value=("Catatan: penyimpangan berarti baris-baris SEBELUM titik itu di sheet rekening "
+                   "tidak tersusun berurutan sesuai kolom Saldo Kumulatif aslinya (kemungkinan input "
+                   "manual tidak kronologis, atau digabung per sesi/hari alih-alih per transaksi). "
+                   "Saldo akhir bulan (Total Aset di Neraca) tetap dihitung dari hasil rekonstruksi "
+                   "(kolom K), bukan dari kolom F yang bolong urutannya - tapi 'Saldo Awal' yang "
+                   "dipakai di Neraca mengasumsikan baris pertama tiap sheet adalah titik awal yang "
+                   "valid. Kalau baris pertama BUKAN baris Saldo Awal (lihat sheet Rekonsiliasi atau "
+                   "cek manual), kemungkinan itu sumber selisihnya.")
+            )
+    ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+    ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+    ws.row_dimensions[r].height = 60
+
+    widths = [30, 24, 20, 22, 20, 40]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    return ws
+
+
 MONTHS_ID = [
     "", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
     "Juli", "Agustus", "September", "Oktober", "November", "Desember",
@@ -952,7 +1075,11 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     tetap ringan dan fokus ke rekonsiliasi saja, sesuai kebutuhan.
     """
     wb = openpyxl.load_workbook(input_path)
-    account_sheets = [s for s in wb.sheetnames if s != "Rekonsiliasi"]
+    REPORT_SHEET_NAMES = {
+        "Rekonsiliasi", "Laporan Laba Rugi", "Neraca", "Laporan Arus Kas",
+        "Diagnostik Keseimbangan",
+    }
+    account_sheets = [s for s in wb.sheetnames if s not in REPORT_SHEET_NAMES]
 
     all_txns = []
     all_txns_by_sheet = {}
@@ -995,7 +1122,8 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label)
         balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label)
         write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
-        order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas"]
+        write_diagnostic_sheet(wb, sheets_last_row, balance_ref)
+        order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas", "Diagnostik Keseimbangan"]
 
     # urutan sheet: rekening dulu, lalu laporan
     wb._sheets = [wb[s] for s in order]
