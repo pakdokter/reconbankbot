@@ -103,13 +103,24 @@ def build_caption(summary):
     return "\n".join(lines)
 
 
+def build_output_filename(summary, with_statements):
+    period = summary.get("period_label") or "Periode Tidak Diketahui"
+    if summary.get("no_issues"):
+        base = f"Reconciliation Completed - {period}"
+    else:
+        base = f"Reconciliation - {period} (perlu verifikasi manual)"
+    suffix = " + Laporan Keuangan" if with_statements else ""
+    return f"{base}{suffix}.xlsx"
+
+
 async def _process_and_reply(update, input_path, with_statements):
     status_msg = await update.message.reply_text("Memproses, tunggu sebentar...")
     with tempfile.TemporaryDirectory() as tmp:
-        suffix = "_LAPORAN.xlsx" if with_statements else "_RECON.xlsx"
-        output_path = os.path.join(tmp, "Hasil" + suffix)
+        # nama file internal sementara - nama final ditentukan setelah tahu
+        # hasil analisis (lihat build_output_filename)
+        raw_output_path = os.path.join(tmp, "output.xlsx")
         try:
-            summary = run_reconciliation(input_path, output_path, with_statements=with_statements)
+            summary = run_reconciliation(input_path, raw_output_path, with_statements=with_statements)
         except Exception as e:
             logger.exception("Gagal memproses file")
             await status_msg.edit_text(
@@ -117,11 +128,12 @@ async def _process_and_reply(update, input_path, with_statements):
                 "Cek apakah nama kolom dan urutan sheet sesuai format baku."
             )
             return
+        final_filename = build_output_filename(summary, with_statements)
         await status_msg.delete()
-        with open(output_path, "rb") as f:
+        with open(raw_output_path, "rb") as f:
             await update.message.reply_document(
                 document=f,
-                filename=os.path.basename(output_path),
+                filename=final_filename,
                 caption=build_caption(summary),
             )
 
