@@ -256,7 +256,13 @@ def find_matches(all_txns, sheet_names):
             and t.is_transfer
             and id(t) not in consumed_ids
             and (counterpart_hint is None or t.sheet == counterpart_hint)
-            and (t.nominal > 0) != (src.nominal > 0)  # tanda berlawanan
+            and (
+                (t.nominal > 0) != (src.nominal > 0)  # tanda berlawanan (normal)
+                or counterpart_hint is not None  # atau rekening tujuan sudah
+                # pasti dari Subjek/Objek -> longgarkan syarat tanda, karena
+                # sebagian pencatatan "Pindah Rekening Internal" tidak
+                # konsisten memakai tanda negatif untuk uang keluar
+            )
         ]
         if not candidates and counterpart_hint is None:
             # tidak ada petunjuk rekening tujuan -> perluas ke semua sheet lain
@@ -270,7 +276,8 @@ def find_matches(all_txns, sheet_names):
                 and (t.nominal > 0) != (src.nominal > 0)
             ]
 
-        # skor tiap kandidat: prioritaskan selisih nominal kecil, lalu tanggal dekat
+        # skor tiap kandidat: utamakan yang tandanya berlawanan (pencatatan
+        # normal), baru selisih tanggal, baru selisih nominal
         scored = []
         for c in candidates:
             nominal_diff = abs(abs(src.nominal) - abs(c.nominal))
@@ -280,14 +287,13 @@ def find_matches(all_txns, sheet_names):
             toleransi = max(TOLERANSI_NOMINAL_ABS, abs(src.nominal) * TOLERANSI_NOMINAL_PERSEN)
             if nominal_diff > toleransi:
                 continue
-            scored.append((date_diff, nominal_diff, c))
+            same_sign = (c.nominal > 0) == (src.nominal > 0)
+            scored.append((1 if same_sign else 0, date_diff, nominal_diff, c, same_sign))
 
-        # prioritaskan kedekatan tanggal (perilaku transfer riil biasanya
-        # settle dalam 0-3 hari), baru kedekatan nominal sebagai tie-breaker
-        scored.sort(key=lambda x: (x[0], x[1]))
+        scored.sort(key=lambda x: (x[0], x[1], x[2]))
 
         if scored:
-            date_diff, nominal_diff, dst = scored[0]
+            _, date_diff, nominal_diff, dst, same_sign = scored[0]
             matched_dst_ids.add(id(dst))
             consumed_ids.add(id(src))
             consumed_ids.add(id(dst))
@@ -322,6 +328,17 @@ def find_matches(all_txns, sheet_names):
             else:
                 conf = "Low"
                 reason = f"Kecocokan hanya berdasarkan toleransi umum, perlu verifikasi manual (selisih Rp{nominal_diff:,.0f}, {date_diff} hari).".replace(",", ".")
+            if same_sign:
+                # tanda sama-sama positif/negatif di kedua rekening -
+                # dicocokkan lewat Subjek/Objek + nominal, bukan lewat tanda,
+                # karena penulisan tanda di salah satu sisi kemungkinan keliru
+                reason += (
+                    " Catatan: kedua sisi tercatat dengan tanda yang sama "
+                    "(bukan berlawanan) - kemungkinan salah input tanda "
+                    "debit/kredit di salah satu rekening, cek manual."
+                )
+                if conf == "High":
+                    conf = "Medium"
             results.append(
                 Match(src=src, dst=dst, confidence=conf, reasoning=reason,
                       date_diff=date_diff, nominal_diff=nominal_diff)
@@ -971,9 +988,10 @@ def run_reconciliation(input_path, output_path, with_statements=False):
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
+    period_label = detect_period_label(all_txns)
+    period_end_label = detect_period_end_date(all_txns, period_label)
+
     if with_statements:
-        period_label = detect_period_label(all_txns)
-        period_end_label = detect_period_end_date(all_txns, period_label)
         income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label)
         balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label)
         write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
@@ -984,14 +1002,19 @@ def run_reconciliation(input_path, output_path, with_statements=False):
 
     wb.save(output_path)
 
+    n_transfer_unmatched = sum(1 for m in matches_section1 if m.dst is None)
+    no_issues = n_transfer_unmatched == 0 and len(minus_flags) == 0
+
     summary = {
         "n_transfer_high": sum(1 for m in matches if m.confidence == "High"),
         "n_transfer_medium": sum(1 for m in matches if m.confidence == "Medium"),
         "n_transfer_low": sum(1 for m in matches if m.confidence == "Low"),
         "n_transfer_split_merge": len(combo_matches),
-        "n_transfer_unmatched": sum(1 for m in matches_section1 if m.dst is None),
+        "n_transfer_unmatched": n_transfer_unmatched,
         "n_minus_flags": len(minus_flags),
         "with_statements": with_statements,
+        "period_label": period_label,
+        "no_issues": no_issues,
     }
     return summary
 
