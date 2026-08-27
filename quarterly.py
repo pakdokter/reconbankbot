@@ -542,6 +542,35 @@ def _norm_name(name):
     return " ".join(name.split()).casefold()
 
 
+# Alias nama pegawai: variasi penulisan yang merujuk ke orang yang sama.
+# Kunci harus huruf kecil. Dicocokkan sebagai AWALAN teks Objek yang sudah
+# dirapikan (bukan cuma exact match) - supaya kasus seperti "Roziyan Hidayat
+# Mei (Sisanya Di Tunai)" (ada catatan tambahan nempel di nama) tetap
+# kecocokan ke alias "roziyan hidayat".
+EMPLOYEE_ALIASES = {
+    "viona winda octavia": "Viona Winda Octavia",
+    "viona": "Viona Winda Octavia",
+    "ahmad roziyan hidayat": "Ahmad Roziyan Hidayat",
+    "roziyan hidayat": "Ahmad Roziyan Hidayat",
+    "ojan": "Ahmad Roziyan Hidayat",
+}
+_EMPLOYEE_ALIAS_KEYS_SORTED = sorted(EMPLOYEE_ALIASES.keys(), key=len, reverse=True)
+
+
+def resolve_employee_name(raw_objek):
+    """Petakan teks Objek mentah ke nama kanonik pegawai. Dicocokkan sebagai
+    awalan (bukan cuma exact match persis) diikuti batas kata/akhir teks,
+    supaya nama yang ada embel-embel tambahan (mis. 'Roziyan Hidayat Mei
+    (Sisanya Di Tunai)') tetap dikenali sebagai orang yang sama. Kalau tidak
+    ada alias yang cocok, pakai teks aslinya (dirapikan spasinya) apa
+    adanya."""
+    norm = _norm_name(raw_objek)
+    for key in _EMPLOYEE_ALIAS_KEYS_SORTED:
+        if norm == key or norm.startswith(key + " ") or norm.startswith(key + "("):
+            return EMPLOYEE_ALIASES[key]
+    return " ".join(raw_objek.split())
+
+
 def write_roster_gaji(wb, months):
     name = "Roster Gaji 3 Bulan"
     if name in wb.sheetnames:
@@ -578,9 +607,10 @@ def write_roster_gaji(wb, months):
                     n_gaji_luar_kuartal += 1
                     continue
                 idx = nama_bulan_list.index(bulan_untuk)
-                key = _norm_name(t.objek)
+                canonical = resolve_employee_name(t.objek)
+                key = canonical.casefold()
                 employees_by_month[idx].add(key)
-                canonical_name.setdefault(key, " ".join(t.objek.split()))
+                canonical_name.setdefault(key, canonical)
                 employee_month_amount[(key, idx)] = employee_month_amount.get((key, idx), 0.0) + t.nominal
     for idx in range(len(labels)):
         for key in sorted(employees_by_month[idx]):
