@@ -143,16 +143,67 @@ class Txn:
 # Membaca sheet rekening
 # ---------------------------------------------------------------------------
 
+CLOSING_SUMMARY_KEYWORDS = [
+    "saldo akhir",
+    "total debit",
+    "total kredit",
+    "total mutasi debit",
+    "total mutasi kredit",
+]
+
+
+def is_closing_summary_row(tanggal, kategori, keterangan):
+    """Deteksi baris rekap penutup (Saldo Awal/Saldo Akhir/Total Debit/Total
+    Kredit) yang kadang ada di baris-baris akhir sheet rekening sebagai
+    ringkasan, BUKAN transaksi. Kalau ikut dimasukkan ke rekonstruksi saldo
+    berjalan (kolom J/K/L), nilainya (yang merupakan TOTAL/ringkasan, bukan
+    nominal transaksi tunggal) akan merusak saldo kumulatif dan jadi sumber
+    selisih di Neraca.
+
+    Dua sinyal dipakai sekaligus:
+    1. Kata kunci eksplisit (saldo akhir/total debit/total kredit) - ini
+       jelas bukan transaksi apapun formatnya.
+    2. Baris tanpa tanggal tapi ada teks kategori/keterangan - transaksi asli
+       di format ini selalu bertanggal, jadi baris berlabel tanpa tanggal
+       (mis. 'Saldo Awal' yang diulang di rekap penutup) juga dianggap
+       bagian dari blok rekap, bukan transaksi kedua yang terpisah dari
+       baris Saldo Awal asli di baris pertama."""
+    text = f"{kategori or ''} {keterangan or ''}".strip().lower()
+    if any(kw in text for kw in CLOSING_SUMMARY_KEYWORDS):
+        return True
+    if tanggal is None and text:
+        return True
+    return False
+
+
 def read_account_sheet(ws):
     """Baca satu sheet rekening jadi list[Txn], berhenti di baris kosong
-    pertama setelah header (baris trailing kosong diabaikan)."""
+    pertama setelah header (baris trailing kosong diabaikan), ATAU begitu
+    ketemu baris rekap penutup (Saldo Akhir/Total Debit/Total Kredit) -
+    baris itu dan seterusnya tidak dianggap transaksi, tapi nilainya
+    ditangkap terpisah sebagai acuan cross-check (lihat closing_info)."""
     txns = []
+    closing_info = {}
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         tanggal, ket, kategori, debit, kredit, saldo, subjek, objek, ket_tambahan = (
             (c.value for c in row[:9])
         )
         if tanggal is None and ket is None and debit is None and kredit is None:
             continue
+        if is_closing_summary_row(tanggal, kategori, ket):
+            label = f"{kategori or ''} {ket or ''}".strip().lower()
+            value = None
+            for cand in (debit, kredit, saldo):
+                if isinstance(cand, (int, float)):
+                    value = cand
+                    break
+            if "total debit" in label:
+                closing_info["total_debit"] = value
+            elif "total kredit" in label:
+                closing_info["total_kredit"] = value
+            elif "saldo akhir" in label:
+                closing_info["saldo_akhir"] = value
+            continue  # bukan transaksi, jangan dimasukkan ke txns
         txns.append(
             Txn(
                 sheet=ws.title,
@@ -168,13 +219,16 @@ def read_account_sheet(ws):
                 ket=ket_tambahan or "",
             )
         )
-    return txns
+    return txns, closing_info
 
 
 def last_data_row(ws):
     last = 1
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         tanggal, ket, kategori, debit, kredit = (c.value for c in row[:5])
+        if is_closing_summary_row(tanggal, kategori, ket):
+            break  # blok rekap penutup (Saldo Akhir/Total Debit/Kredit) -
+            # berhenti di sini, jangan ikut dihitung sebagai baris transaksi
         if any(v is not None for v in (tanggal, ket, kategori, debit, kredit)):
             last = row[0].row
     return last
@@ -703,7 +757,24 @@ INCOME_CATEGORIES_EXPENSE = [
 # pakai kategori umum yang durabel + wildcard "Gaji*" sebagai jaring pengaman
 # supaya label lama/berbeda (termasuk yang sudah ada di data historis) tetap
 # ketangkep tanpa perlu didaftar satu-satu di kode.
-GAJI_GENERIC_CATEGORIES = ["Gaji Bulan Ini", "Gaji Accrual"]
+# Gaji: dulu satu baris per "Gaji <Bulan> <Tahun>" (mis. "Gaji Desember 2024")
+# yang berarti daftar kategori harus terus ditambah tiap tahun. Sekarang
+# ditentukan dinamis dari bulan periode yang terdeteksi: "Gaji <bulan ini>"
+# = beban gaji bulan berjalan, "Gaji <bulan lalu>" = accrual (gaji bulan
+# sebelumnya yang baru dibayar/dicatat bulan ini). Wildcard "*" di akhir
+# supaya tetap cocok baik kategorinya pakai tahun (mis. "Gaji Desember 2024")
+# atau tidak (mis. "Gaji Desember" saja).
+def gaji_category_patterns(period_month):
+    """Return (pola_bulan_ini, pola_bulan_lalu, nama_bulan_ini, nama_bulan_lalu)
+    berdasarkan nomor bulan periode (1-12). Kalau bulan tidak terdeteksi,
+    fallback ke pola generik "Gaji Bulan Ini"/"Gaji Accrual" apa adanya."""
+    if not period_month:
+        return "Gaji Bulan Ini*", "Gaji Accrual*", "Bulan Ini", "Accrual"
+    prev_month = 12 if period_month == 1 else period_month - 1
+    nama_ini = MONTHS_ID[period_month]
+    nama_lalu = MONTHS_ID[prev_month]
+    return f"Gaji {nama_ini}*", f"Gaji {nama_lalu}*", nama_ini, nama_lalu
+
 
 # Biaya admin, biaya admin transfer (Fliptech, auto dari Rekonsiliasi), bunga,
 # dan pajak bank digabung jadi SATU baris "Biaya Admin & Bunga Bank" - dulu
@@ -819,21 +890,22 @@ def sumif_one_sheet(sheet, last_row, category):
             f"'{sheet}'!$J$2:$J${last_row})")
 
 
-def sumif_gaji_lainnya_formula(sheet, last_row):
+def sumif_gaji_lainnya_formula(sheet, last_row, known_patterns):
     """Jaring pengaman: tangkap semua kategori yang diawali 'Gaji' TAPI bukan
-    salah satu label generik yang sudah dihitung terpisah (mis. label lama
-    'Gaji Desember 2024' dkk, atau label baru yang belum masuk daftar) -
-    supaya tidak ada beban gaji yang diam-diam hilang dari Laba Rugi hanya
-    karena istilah kategorinya beda dari yang diharapkan."""
+    salah satu pola bulan berjalan/accrual yang sudah dihitung terpisah (mis.
+    label lama 'Gaji Desember 2024' dari bulan yang bukan bulan ini/lalu,
+    atau label lain yang tidak terduga) - supaya tidak ada beban gaji yang
+    diam-diam hilang dari Laba Rugi hanya karena istilah kategorinya beda
+    dari yang diharapkan."""
     rng_c = f"'{sheet}'!$C$2:$C${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     parts = [f"SUMIF({rng_c},\"Gaji*\",{rng_j})"]
-    for cat in GAJI_GENERIC_CATEGORIES:
-        parts.append(f"SUMIF({rng_c},\"{cat}\",{rng_j})")
+    for pat in known_patterns:
+        parts.append(f"SUMIF({rng_c},\"{pat}\",{rng_j})")
     return "=" + parts[0] + "".join(f"-{p}" for p in parts[1:])
 
 
-def write_income_statement(wb, sheets_last_row, period_label, recon_range):
+def write_income_statement(wb, sheets_last_row, period_label, period_month, recon_range):
     name = "Laporan Laba Rugi"
     if name in wb.sheetnames:
         del wb[name]
@@ -869,17 +941,22 @@ def write_income_statement(wb, sheets_last_row, period_label, recon_range):
                               lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
-    # Gaji: kategori generik yang durabel (tidak perlu ditambah tiap tahun),
-    # plus baris "Gaji Lainnya" sebagai jaring pengaman untuk label historis
-    # (mis. "Gaji Desember 2024") atau label lain yang belum terdaftar
-    for cat in GAJI_GENERIC_CATEGORIES:
-        write_pivot_data_row(ws, r, cat, sheets,
-                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
-        exp_rows.append(r)
-        r += 1
+    # Gaji: pola dinamis dari bulan periode (bukan daftar tahun hardcode) -
+    # "Gaji <bulan ini>" = beban gaji bulan berjalan, "Gaji <bulan lalu>" =
+    # accrual, plus "Gaji Lainnya" sebagai jaring pengaman wildcard untuk
+    # label historis (mis. "Gaji Desember 2024" dari bulan selain 2 di atas)
+    pat_ini, pat_lalu, nama_ini, nama_lalu = gaji_category_patterns(period_month)
+    write_pivot_data_row(ws, r, f"Gaji Bulan Ini (Gaji {nama_ini})", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], pat_ini))
+    exp_rows.append(r)
+    r += 1
+    write_pivot_data_row(ws, r, f"Gaji Accrual (Gaji {nama_lalu})", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], pat_lalu))
+    exp_rows.append(r)
+    r += 1
     write_pivot_data_row(
         ws, r, "Gaji Lainnya (kategori historis/lain, tertangkap wildcard)", sheets,
-        lambda sheet: sumif_gaji_lainnya_formula(sheet, sheets_last_row[sheet]),
+        lambda sheet: sumif_gaji_lainnya_formula(sheet, sheets_last_row[sheet], [pat_ini, pat_lalu]),
     )
     exp_rows.append(r)
     r += 1
@@ -1130,9 +1207,9 @@ def write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label):
 # Diagnostik Keseimbangan - alat telusur kalau Neraca/Arus Kas selisih
 # ---------------------------------------------------------------------------
 
-def write_diagnostic_sheet(wb, sheets_last_row, balance_ref):
+def write_diagnostic_sheet(wb, sheets_last_row, balance_ref, closing_info_by_sheet):
     """Sheet khusus buat menelusuri KENAPA CEK KESEIMBANGAN di Neraca tidak
-    nol. Dua kemungkinan penyebab yang paling sering terjadi:
+    nol. Beberapa kemungkinan penyebab yang paling sering terjadi:
     1. Transfer antar rekening yang belum matched (lihat sheet Rekonsiliasi
        bagian 1) - nilainya tidak ikut dihitung di Laba Rugi/Ekuitas, tapi
        tetap mempengaruhi saldo kas riil.
@@ -1141,7 +1218,11 @@ def write_diagnostic_sheet(wb, sheets_last_row, balance_ref):
        rekonstruksi (kolom K) menyimpang dari saldo tercatat. Bagian ini
        menunjukkan tepat di rekening mana dan seberapa besar penyimpangan
        itu terjadi, lewat kolom L (Selisih vs Saldo Tercatat) di tiap sheet
-       rekening."""
+       rekening.
+    3. Kalau sheet rekening punya blok rekap penutup (Saldo Akhir/Total
+       Debit/Total Kredit di baris-baris akhir), nilai itu SUDAH dikeluarkan
+       dari rekonstruksi kolom J/K/L (supaya tidak dobel/merusak saldo
+       berjalan) dan dipakai di sini sebagai acuan pembanding independen."""
     name = "Diagnostik Keseimbangan"
     if name in wb.sheetnames:
         del wb[name]
@@ -1150,8 +1231,9 @@ def write_diagnostic_sheet(wb, sheets_last_row, balance_ref):
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = (
         "Dipakai kalau baris 'CEK KESEIMBANGAN' di Neraca tidak nol. "
-        "Cek dua bagian di bawah: transfer yang belum matched (sheet "
-        "Rekonsiliasi bagian 1), dan penyimpangan urutan data per rekening."
+        "Cek bagian di bawah: transfer yang belum matched (sheet "
+        "Rekonsiliasi bagian 1), penyimpangan urutan data per rekening, "
+        "dan cross-check terhadap blok rekap penutup sheet (kalau ada)."
     )
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
@@ -1202,6 +1284,41 @@ def write_diagnostic_sheet(wb, sheets_last_row, balance_ref):
     ws.cell(row=r, column=2).font = Font(bold=True)
     ws.cell(row=r, column=2).number_format = NUMBER_FORMAT
     r += 2
+
+    ws.cell(row=r, column=1,
+            value="1c. CROSS-CHECK SALDO AKHIR RESMI (dari blok rekap penutup sheet, kalau ada)")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    headers1c = ["Rekening", "Saldo Akhir Resmi (dari blok penutup)", "Saldo Akhir Rekonstruksi (Kolom K)", "Selisih"]
+    hdr_row1c = r
+    for i, h in enumerate(headers1c, start=1):
+        ws.cell(row=hdr_row1c, column=i, value=h)
+    style_header(ws, hdr_row1c, len(headers1c))
+    r += 1
+    any_closing_found = False
+    for sheet, last_row in sheets_last_row.items():
+        info = closing_info_by_sheet.get(sheet, {})
+        saldo_akhir_resmi = info.get("saldo_akhir")
+        ws.cell(row=r, column=1, value=sheet)
+        if saldo_akhir_resmi is not None:
+            any_closing_found = True
+            ws.cell(row=r, column=2, value=saldo_akhir_resmi)
+            ws.cell(row=r, column=2).number_format = NUMBER_FORMAT
+            ws.cell(row=r, column=3, value=f"='{sheet}'!$K${last_row}")
+            ws.cell(row=r, column=3).number_format = NUMBER_FORMAT
+            ws.cell(row=r, column=4, value=f"=B{r}-C{r}")
+            ws.cell(row=r, column=4).number_format = NUMBER_FORMAT
+        else:
+            ws.cell(row=r, column=2, value="(tidak ada blok penutup di sheet ini)")
+            ws.cell(row=r, column=2).font = Font(italic=True, color="6B7280")
+        r += 1
+    if not any_closing_found:
+        ws.cell(row=r, column=1,
+                value="Tidak ada sheet dengan blok rekap penutup (Saldo Akhir/Total Debit/Kredit) terdeteksi.")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        r += 1
+    r += 1
 
     ws.cell(row=r, column=1, value="2. PENYIMPANGAN URUTAN DATA PER REKENING (Kolom K vs Kolom F)")
     ws.cell(row=r, column=1).font = SECTION_FONT
@@ -1287,16 +1404,9 @@ def coerce_date(value):
     return None
 
 
-def detect_period_label(all_txns):
-    """Tebak label bulan/tahun laporan dari tanggal transaksi yang paling
-    sering muncul (bukan hardcode), dipakai di judul-judul laporan.
-
-    Menerima datetime.datetime MAUPUN datetime.date murni (mis. dari file
-    lama/preformatted yang tanggalnya tersimpan tanpa komponen jam), dan
-    juga tanggal yang tersimpan sebagai teks - kalau cuma cek
-    datetime.datetime, file dengan kolom tanggal bertipe lain akan gagal
-    terdeteksi periodenya walau pencocokan transfer tetap normal
-    (days_between sudah lebih longgar, tapi fungsi ini sebelumnya belum)."""
+def detect_period(all_txns):
+    """Tebak (tahun, bulan) laporan dari tanggal transaksi yang paling
+    sering muncul. Return (None, None) kalau tidak ada tanggal valid."""
     from collections import Counter
 
     counts = Counter()
@@ -1305,8 +1415,17 @@ def detect_period_label(all_txns):
         if d is not None:
             counts[(d.year, d.month)] += 1
     if not counts:
-        return "PERIODE TIDAK TERDETEKSI"
+        return None, None
     (year, month), _ = counts.most_common(1)[0]
+    return year, month
+
+
+def detect_period_label(all_txns):
+    """Label teks 'Bulan Tahun' dari (tahun, bulan) yang terdeteksi, dipakai
+    di judul-judul laporan."""
+    year, month = detect_period(all_txns)
+    if year is None:
+        return "PERIODE TIDAK TERDETEKSI"
     return f"{MONTHS_ID[month]} {year}"
 
 
@@ -1345,14 +1464,16 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     all_txns_by_sheet = {}
     sheets_last_row = {}
     opening_rows = {}
+    closing_info_by_sheet = {}
     for sname in account_sheets:
         ws = wb[sname]
         lr = last_data_row(ws)
         sheets_last_row[sname] = lr
         add_helper_column(ws, lr)
-        txns = read_account_sheet(ws)
+        txns, closing_info = read_account_sheet(ws)
         all_txns.extend(txns)
         all_txns_by_sheet[sname] = txns
+        closing_info_by_sheet[sname] = closing_info
         opening = next((t for t in txns if t.is_opening), None)
         opening_rows[sname] = opening.row if opening else 2
 
@@ -1375,14 +1496,15 @@ def run_reconciliation(input_path, output_path, with_statements=False):
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
+    period_year, period_month = detect_period(all_txns)
     period_label = detect_period_label(all_txns)
     period_end_label = detect_period_end_date(all_txns, period_label)
 
     if with_statements:
-        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label, recon_range)
+        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label, period_month, recon_range)
         balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label, recon_range)
         write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
-        write_diagnostic_sheet(wb, sheets_last_row, balance_ref)
+        write_diagnostic_sheet(wb, sheets_last_row, balance_ref, closing_info_by_sheet)
         order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas", "Diagnostik Keseimbangan"]
 
     # urutan sheet: rekening dulu, lalu laporan
