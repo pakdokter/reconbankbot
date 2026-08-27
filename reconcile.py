@@ -279,11 +279,15 @@ class Match:
 
 
 def days_between(a, b):
-    if isinstance(a, datetime.datetime):
-        a = a.date()
-    if isinstance(b, datetime.datetime):
-        b = b.date()
-    if not isinstance(a, datetime.date) or not isinstance(b, datetime.date):
+    """Selisih hari antara dua tanggal, menerima datetime.datetime,
+    datetime.date, ATAU teks tanggal format umum (lihat coerce_date) - kalau
+    cuma cek isinstance(datetime.date), file dengan kolom tanggal bertipe
+    teks (mis. hasil parser 'preformatted' tertentu) akan selalu dianggap
+    selisih 9999 hari (di luar toleransi), bikin SEMUA transfer di file itu
+    gagal matched walau tanggal & nominalnya persis sama."""
+    a = coerce_date(a)
+    b = coerce_date(b)
+    if a is None or b is None:
         return 9999
     return abs((a - b).days)
 
