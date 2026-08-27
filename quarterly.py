@@ -1,23 +1,38 @@
 """
 quarterly.py
-Laporan keuangan kuartalan: Laba Rugi, Neraca, Arus Kas, dan Roster Gaji 3
-Bulan - dibangun dari 3 file hasil rekonsiliasi bulanan yang SUDAH
-completed (bulan harus berurutan).
+Laporan keuangan kuartalan: Laba Rugi, Neraca, Arus Kas, Roster Gaji 3
+Bulan, dan Analisis & Tren - dibangun dari 3 file hasil rekonsiliasi
+bulanan yang SUDAH completed (bulan harus berurutan).
+
+Output HANYA 5 sheet ini - sheet rekening mentah dari file bulanan TIDAK
+disalin ke workbook kuartalan. Karena itu, angka per kategori/pegawai
+dihitung langsung di Python dari data sumber (bukan rumus SUMIF/SUMIFS ke
+sheet rekening, karena sheet itu tidak ada di file output). Subtotal dan
+baris yang murni menggabungkan sel lain DALAM sheet output yang sama
+(Total Pendapatan, Total Beban, Laba Bersih kumulatif, dll) tetap rumus,
+karena sel-sel itu memang saling merujuk di dalam satu workbook yang sama.
 
 Beda dengan reconcile.py (yang MELAKUKAN rekonsiliasi), modul ini murni
-MENGGABUNGKAN 3 bulan yang datanya sudah bersih. Tidak ada pencocokan
-transfer baru di sini - itu tanggung jawab reconcile.py di masing-masing
-file bulanan sebelum digabung.
+MENGGABUNGKAN & MERINGKAS 3 bulan yang datanya sudah bersih. Tidak ada
+pencocokan transfer baru di sini - itu tanggung jawab reconcile.py di
+masing-masing file bulanan sebelum digabung.
 
-Semua angka tetap rumus Excel beralamat absolut, merujuk ke sheet rekening
-yang disalin apa adanya dari tiap file bulanan ke satu workbook kuartalan.
+Catatan penting soal Roster Gaji: pengelompokan gaji per pegawai per bulan
+memakai bulan yang DISEBUT DI KETERANGAN transaksi (mis. "Gaji Eva Januari
+2025"), dicari lintas SEMUA bulan kuartal - bukan berdasarkan di sheet
+bulan mana transaksinya fisik tercatat. Gaji sering dibayar telat (gaji
+Januari baru dibayar/tercatat Februari), jadi kalau dikelompokkan per
+sheet, itu akan salah masuk kolom bulan pembayaran padahal seharusnya
+kolom bulan yang digaji. Baris "Gaji Pegawai" di Laba Rugi Kuartal TIDAK
+memakai logika ini - itu tetap dihitung per bulan pembayaran (basis kas),
+karena Laba Rugi/Neraca memang laporan basis kas bulan berjalan.
 """
 
 import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from copy import copy as copy_style
+from openpyxl.chart import LineChart, BarChart, Reference
 
 import reconcile as rc
 
@@ -36,6 +51,20 @@ class QuarterlyInputError(Exception):
 # Baca & validasi 3 file bulanan
 # ---------------------------------------------------------------------------
 
+def compute_sheet_k(txns):
+    """Replikasi rumus K2=$F$2, K(n)=K(n-1)+J(n) yang dipakai reconcile.py
+    (kolom bantu Saldo Kumulatif Rekonstruksi), tapi dihitung di Python
+    supaya tidak perlu sheet rekening tetap ada di workbook output.
+    Return (saldo_awal, saldo_akhir) untuk satu sheet."""
+    if not txns:
+        return 0.0, 0.0
+    opening = txns[0].saldo if txns[0].saldo is not None else 0.0
+    running = opening
+    for t in txns[1:]:
+        running += t.nominal
+    return opening, running
+
+
 def load_month(path):
     wb = openpyxl.load_workbook(path)
     account_sheets = [s for s in wb.sheetnames if s not in REPORT_SHEET_NAMES]
@@ -44,29 +73,25 @@ def load_month(path):
             f"File '{path}' tidak punya sheet rekening yang dikenali (cuma ada: {wb.sheetnames})."
         )
     all_txns = []
-    sheets_last_row = {}
-    opening_rows = {}
-    txns_by_sheet = {}
+    total_saldo_awal = 0.0
+    total_aset = 0.0
     for sname in account_sheets:
         ws = wb[sname]
-        lr = rc.last_data_row(ws)
-        sheets_last_row[sname] = lr
         txns, _ = rc.read_account_sheet(ws)
         all_txns.extend(txns)
-        txns_by_sheet[sname] = txns
-        opening = next((t for t in txns if t.is_opening), None)
-        opening_rows[sname] = opening.row if opening else 2
+        opening, closing = compute_sheet_k(txns)
+        total_saldo_awal += opening
+        total_aset += closing
     year, month = rc.detect_period(all_txns)
     if year is None:
         raise QuarterlyInputError(f"Periode tidak terdeteksi di file '{path}'.")
     return {
-        "wb": wb,
         "year": year,
         "month": month,
-        "sheets_last_row": sheets_last_row,
-        "opening_rows": opening_rows,
-        "account_sheets": account_sheets,
-        "txns_by_sheet": txns_by_sheet,
+        "label": f"{rc.MONTHS_ID[month]} {year}",
+        "all_txns": all_txns,
+        "total_saldo_awal": total_saldo_awal,
+        "total_aset": total_aset,
     }
 
 
@@ -78,7 +103,7 @@ def validate_consecutive(months):
     if len(months) != 3:
         raise QuarterlyInputError(f"Butuh tepat 3 file, yang diterima {len(months)}.")
     ordered = sorted(months, key=lambda m: (m["year"], m["month"]))
-    labels = [f"{rc.MONTHS_ID[m['month']]} {m['year']}" for m in ordered]
+    labels = [m["label"] for m in ordered]
     for i in range(1, 3):
         y0, m0 = ordered[i - 1]["year"], ordered[i - 1]["month"]
         y1, m1 = ordered[i]["year"], ordered[i]["month"]
@@ -94,61 +119,54 @@ def validate_consecutive(months):
 
 
 # ---------------------------------------------------------------------------
-# Salin sheet rekening apa adanya ke workbook kuartalan
+# Agregasi kategori (Python, bukan rumus - sheet rekening sumber tidak ikut
+# disalin ke workbook output)
 # ---------------------------------------------------------------------------
 
-def copy_sheet_into(src_ws, dest_wb, new_title):
-    dest_ws = dest_wb.create_sheet(new_title)
-    for row in src_ws.iter_rows():
-        for cell in row:
-            new_cell = dest_ws.cell(row=cell.row, column=cell.column, value=cell.value)
-            if cell.has_style:
-                new_cell.font = copy_style(cell.font)
-                new_cell.fill = copy_style(cell.fill)
-                new_cell.border = copy_style(cell.border)
-                new_cell.alignment = copy_style(cell.alignment)
-                new_cell.number_format = cell.number_format
-    for col_letter, dim in src_ws.column_dimensions.items():
-        dest_ws.column_dimensions[col_letter].width = dim.width
-    dest_ws.freeze_panes = src_ws.freeze_panes
-    return dest_ws
+def sum_category(txns, category):
+    cat = category.lower()
+    return sum(t.nominal for t in txns if (t.kategori or "").lower() == cat)
 
 
-# ---------------------------------------------------------------------------
-# Helper rumus lintas-sheet-dalam-satu-bulan
-# ---------------------------------------------------------------------------
-
-def sumif_across_sheets(sheets_info, category):
-    parts = [
-        f"SUMIF('{sheet}'!$C$2:$C${last_row},\"{category}\",'{sheet}'!$J$2:$J${last_row})"
-        for sheet, last_row in sheets_info
-    ]
-    return "=" + "+".join(parts) if parts else "=0"
+def sum_category_multi(txns, categories):
+    cats = {c.lower() for c in categories}
+    return sum(t.nominal for t in txns if (t.kategori or "").lower() in cats)
 
 
-def sumif_multi_across_sheets(sheets_info, categories):
-    parts = []
-    for sheet, last_row in sheets_info:
-        for cat in categories:
-            parts.append(f"SUMIF('{sheet}'!$C$2:$C${last_row},\"{cat}\",'{sheet}'!$J$2:$J${last_row})")
-    return "=" + "+".join(parts) if parts else "=0"
+def sum_category_prefix(txns, prefix):
+    p = prefix.lower()
+    return sum(t.nominal for t in txns if (t.kategori or "").lower().startswith(p))
+
+
+def _txns_for_label(months, label):
+    for m in months:
+        if m["label"] == label:
+            return m["all_txns"]
+    return []
+
+
+def _nama_bulan_short(label):
+    """'Januari 2025' -> 'Januari'."""
+    return label.rsplit(" ", 1)[0]
 
 
 # ---------------------------------------------------------------------------
-# Laba Rugi Kuartal (kolom = 3 bulan + TOTAL)
+# Laba Rugi Kuartal (kolom = 3 bulan + TOTAL). Basis kas per bulan
+# pembayaran - Gaji TIDAK direalokasi ke bulan yang digaji (beda dengan
+# Roster Gaji), sesuai kebutuhan laporan ini apa adanya.
 # ---------------------------------------------------------------------------
 
-def write_quarterly_income_statement(wb, month_sheet_map):
+def write_quarterly_income_statement(wb, months):
     name = "Laba Rugi Kuartal"
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
-    labels = [m["label"] for m in month_sheet_map]
+    labels = [m["label"] for m in months]
     period_text = f"{labels[0]} - {labels[-1]}"
     ws["A1"] = f"LAPORAN LABA RUGI KUARTALAN - {period_text.upper()}"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = ("Kolom = tiap bulan (rumus SUMIF ke sheet rekening bulan itu), kolom TOTAL "
-                "= jumlah kuartal. Roster gaji per pegawai ada di sheet terpisah.")
+    ws["A2"] = ("Kolom = tiap bulan (basis kas, dihitung dari data sumber), kolom TOTAL = jumlah "
+                "kuartal. Roster gaji per pegawai (basis accrual) ada di sheet terpisah.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     r = 4
@@ -161,7 +179,7 @@ def write_quarterly_income_statement(wb, month_sheet_map):
     for cat in rc.INCOME_CATEGORIES_REVENUE:
         rc.write_pivot_data_row(
             ws, r, cat, labels,
-            lambda label, cat=cat: sumif_across_sheets(_sheets_for_label(month_sheet_map, label), cat),
+            lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
         )
         rev_rows.append(r)
         r += 1
@@ -175,33 +193,25 @@ def write_quarterly_income_statement(wb, month_sheet_map):
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
         rc.write_pivot_data_row(
             ws, r, cat, labels,
-            lambda label, cat=cat: sumif_across_sheets(_sheets_for_label(month_sheet_map, label), cat),
+            lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
         )
         exp_rows.append(r)
         r += 1
     rc.write_pivot_data_row(
         ws, r, "Marketing & RnD", labels,
-        lambda label: sumif_multi_across_sheets(_sheets_for_label(month_sheet_map, label), rc.MARKETING_RND_CATEGORY_TEXTS),
-    )
-    exp_rows.append(r)
-    r += 1
-    all_sheets_quarter = _all_sheets(month_sheet_map)
-    nama_bulan_list = [_nama_bulan_short(lb) for lb in labels]
-    rc.write_pivot_data_row(
-        ws, r, "Gaji Pegawai (rincian per orang: sheet Roster Gaji)", labels,
-        lambda label: sumif_gaji_bulan_kuartal(all_sheets_quarter, _nama_bulan_short(label)),
+        lambda label: sum_category_multi(_txns_for_label(months, label), rc.MARKETING_RND_CATEGORY_TEXTS),
     )
     exp_rows.append(r)
     r += 1
     rc.write_pivot_data_row(
-        ws, r, "Gaji Lainnya (accrual luar kuartal - ditotal di kolom bulan pertama)", labels,
-        lambda label: "=0" if label != labels[0] else sumif_gaji_lainnya_kuartal(all_sheets_quarter, nama_bulan_list),
+        ws, r, "Gaji Pegawai (basis kas - rincian accrual per orang: sheet Roster Gaji)", labels,
+        lambda label: sum_category_prefix(_txns_for_label(months, label), "gaji"),
     )
     exp_rows.append(r)
     r += 1
     rc.write_pivot_data_row(
         ws, r, "Biaya Admin Bank (termasuk biaya transfer Fliptech)", labels,
-        lambda label: sumif_multi_across_sheets(_sheets_for_label(month_sheet_map, label), rc.BANK_FEE_CATEGORY_TEXTS),
+        lambda label: sum_category_multi(_txns_for_label(months, label), rc.BANK_FEE_CATEGORY_TEXTS),
     )
     exp_rows.append(r)
     r += 1
@@ -215,7 +225,7 @@ def write_quarterly_income_statement(wb, month_sheet_map):
     for cat in rc.OTHER_CATEGORIES:
         rc.write_pivot_data_row(
             ws, r, cat, labels,
-            lambda label, cat=cat: sumif_across_sheets(_sheets_for_label(month_sheet_map, label), cat),
+            lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
         )
         other_rows.append(r)
         r += 1
@@ -232,7 +242,7 @@ def write_quarterly_income_statement(wb, month_sheet_map):
     for c in range(1, rc.pivot_total_col(labels) + 1):
         ws.cell(row=r, column=c).font = Font(bold=True, size=12)
 
-    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["A"].width = 46
     for i in range(len(labels)):
         ws.column_dimensions[rc.col_letter(2 + i)].width = 18
     ws.column_dimensions[rc.col_letter(rc.pivot_total_col(labels))].width = 18
@@ -243,88 +253,12 @@ def write_quarterly_income_statement(wb, month_sheet_map):
             "labels": labels, "total_col": rc.pivot_total_col(labels)}
 
 
-def _sheets_for_label(month_sheet_map, label):
-    for m in month_sheet_map:
-        if m["label"] == label:
-            return m["sheets"]
-    return []
-
-
-def _opening_for_label(month_sheet_map, label):
-    for m in month_sheet_map:
-        if m["label"] == label:
-            return m["opening"]
-    return []
-
-
-def _all_sheets(month_sheet_map):
-    """Semua sheet rekening dari SELURUH kuartal digabung jadi satu list -
-    dipakai buat baris Gaji, karena gaji untuk bulan X bisa saja BARU
-    tercatat/dibayar di sheet bulan Y (telat bayar). Supaya "Gaji Eva
-    Januari 2023" tetap masuk kolom Januari meskipun transaksinya baru
-    muncul di sheet Februari, pencarian kategori+bulan harus lintas semua
-    sheet kuartal, bukan cuma sheet bulan itu sendiri."""
-    sheets = []
-    for m in month_sheet_map:
-        sheets.extend(m["sheets"])
-    return sheets
-
-
-def _nama_bulan_short(label):
-    """'Januari 2025' -> 'Januari' (nama bulan tanpa tahun, dipakai buat
-    wildcard pencarian di Keterangan - contoh nyata di data ('Gaji
-    Latifatul Husna Januari') kadang tidak menyertakan tahun sama sekali)."""
-    return label.rsplit(" ", 1)[0]
-
-
-def sumif_gaji_bulan_kuartal(all_sheets, nama_bulan):
-    """SUMIFS lintas SEMUA sheet kuartal: kategori 'Gaji*' DAN keterangan
-    menyebut nama_bulan - menangkap gaji untuk bulan itu di manapun dia
-    tercatat (termasuk kalau baru dibayar/tercatat di bulan berikutnya)."""
-    parts = [
-        (f"SUMIFS('{sheet}'!$J$2:$J${last_row},"
-         f"'{sheet}'!$C$2:$C${last_row},\"Gaji*\","
-         f"'{sheet}'!$B$2:$B${last_row},\"*{nama_bulan}*\")")
-        for sheet, last_row in all_sheets
-    ]
-    return "=" + "+".join(parts) if parts else "=0"
-
-
-def sumif_gaji_lainnya_kuartal(all_sheets, nama_bulan_list):
-    """Jaring pengaman: total semua baris 'Gaji*' di seluruh kuartal DIKURANGI
-    yang sudah tertangkap oleh 3 kolom bulan di atas - supaya gaji yang
-    keterangannya menyebut bulan DI LUAR kuartal (mis. accrual dari sebelum
-    kuartal ini mulai) tidak diam-diam hilang dari Laba Rugi Kuartal."""
-    parts = ["+".join(
-        f"SUMIF('{sheet}'!$C$2:$C${last_row},\"Gaji*\",'{sheet}'!$J$2:$J${last_row})"
-        for sheet, last_row in all_sheets
-    ) or "0"]
-    for nama_bulan in nama_bulan_list:
-        parts.append(sumif_gaji_bulan_kuartal(all_sheets, nama_bulan)[1:])
-    return "=" + parts[0] + "".join(f"-({p})" for p in parts[1:])
-
-
-def sumifs_employee_bulan_kuartal(all_sheets, employee_name, nama_bulan):
-    """Sama seperti sumif_gaji_bulan_kuartal tapi ditambah filter nama
-    pegawai (kolom Objek) - dipakai per sel di Roster Gaji."""
-    name = employee_name.strip()
-    parts = [
-        (f"SUMIFS('{sheet}'!$J$2:$J${last_row},"
-         f"'{sheet}'!$C$2:$C${last_row},\"Gaji*\","
-         f"'{sheet}'!$H$2:$H${last_row},\"*{name}*\","
-         f"'{sheet}'!$B$2:$B${last_row},\"*{nama_bulan}*\")")
-        for sheet, last_row in all_sheets
-    ]
-    return "=" + "+".join(parts) if parts else "=0"
-
-
 # ---------------------------------------------------------------------------
 # Helper pivot "snapshot": khusus buat Neraca Kuartal, di mana kolom kanan
 # HARUS berarti "posisi di akhir kuartal" (= kolom bulan terakhir), BUKAN
 # penjumlahan 3 bulan - beda dengan Laba Rugi/Arus Kas yang memang laporan
 # arus (flow) sehingga penjumlahan masuk akal. Neraca itu snapshot (stok),
-# menjumlah 3 snapshot saldo akan salah secara akuntansi (mis. Total Aset
-# Jan+Feb+Mar tidak berarti apa-apa).
+# menjumlah 3 snapshot saldo akan salah secara akuntansi.
 # ---------------------------------------------------------------------------
 
 def write_snapshot_header(ws, row, labels):
@@ -388,17 +322,17 @@ def write_snapshot_formula_row(ws, row, label, labels, per_col_formula_fn, bold=
         for c in range(1, total_col + 1):
             ws.cell(row=row, column=c).font = Font(bold=True)
 
+
 # ---------------------------------------------------------------------------
-# Neraca Kuartal (kolom = 3 bulan, tiap kolom snapshot akhir bulan itu;
-# sisi Ekuitas dihitung KUMULATIF dari bulan pertama supaya nyambung)
+# Neraca Kuartal
 # ---------------------------------------------------------------------------
 
-def write_quarterly_balance_sheet(wb, month_sheet_map, income_ref):
+def write_quarterly_balance_sheet(wb, months, income_ref):
     name = "Neraca Kuartal"
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
-    labels = [m["label"] for m in month_sheet_map]
+    labels = [m["label"] for m in months]
     ws["A1"] = f"NERACA KUARTALAN - PER AKHIR {labels[0].upper()} S.D. {labels[-1].upper()}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = ("Tiap kolom = posisi akhir bulan itu (snapshot). Sisi Ekuitas dihitung kumulatif "
@@ -414,7 +348,7 @@ def write_quarterly_balance_sheet(wb, month_sheet_map, income_ref):
     kas_row = r
     write_snapshot_data_row(
         ws, r, "Kas & Setara Kas (Saldo Akhir Bulan)", labels,
-        lambda label: sumif_kas_akhir(_sheets_for_label(month_sheet_map, label)),
+        lambda label: next(m["total_aset"] for m in months if m["label"] == label),
         bold=True,
     )
     total_asset_row = kas_row
@@ -422,21 +356,31 @@ def write_quarterly_balance_sheet(wb, month_sheet_map, income_ref):
 
     rc.write_pivot_section(ws, r, "EKUITAS (kumulatif sejak awal kuartal)", labels)
     r += 1
-    saldo_awal_kuartal_formula = sumif_saldo_awal(_opening_for_label(month_sheet_map, labels[0]))
+    saldo_awal_kuartal = months[0]["total_saldo_awal"]
     saldo_awal_row = r
-    write_snapshot_data_row(ws, r, "Saldo Awal Kuartal (tetap, dari bulan pertama)", labels,
-                             lambda label: saldo_awal_kuartal_formula)
+    write_snapshot_data_row(
+        ws, r, "Saldo Awal Kuartal (tetap, dari bulan pertama)", labels,
+        lambda label, val=saldo_awal_kuartal: (
+            val if label == labels[0] else f"={rc.col_letter(2)}{saldo_awal_row}"
+        ),
+    )
     r += 1
     modal_row = r
+    modal_per_month = [sum_category(m["all_txns"], "Modal & Setoran Pemilik") for m in months]
+    modal_kumulatif = []
+    running = 0.0
+    for v in modal_per_month:
+        running += v
+        modal_kumulatif.append(running)
     write_snapshot_data_row(
         ws, r, "Modal & Setoran Pemilik (kumulatif s.d. bulan ini)", labels,
-        lambda label: sumif_modal_kumulatif(month_sheet_map, label),
+        lambda label: modal_kumulatif[labels.index(label)],
     )
     r += 1
     laba_row = r
     write_snapshot_formula_row(
         ws, r, "Laba Bersih (kumulatif s.d. bulan ini)", labels,
-        lambda cl: laba_kumulatif_formula(income_ref, labels, cl),
+        lambda cl: laba_kumulatif_formula(income_ref, cl),
     )
     r += 1
     total_equity_row = r
@@ -451,9 +395,15 @@ def write_quarterly_balance_sheet(wb, month_sheet_map, income_ref):
     )
     r += 1
     transfer_row = r
+    transfer_per_month = [sum_category_multi(m["all_txns"], rc.TRANSFER_CATEGORY_TEXTS) for m in months]
+    transfer_kumulatif = []
+    running = 0.0
+    for v in transfer_per_month:
+        running += v
+        transfer_kumulatif.append(running)
     write_snapshot_data_row(
         ws, r, "Transfer Bersih Kumulatif (info)", labels,
-        lambda label: sumif_transfer_kumulatif(month_sheet_map, label),
+        lambda label: transfer_kumulatif[labels.index(label)],
     )
     r += 1
     residual_row = r
@@ -466,7 +416,7 @@ def write_quarterly_balance_sheet(wb, month_sheet_map, income_ref):
     ws.column_dimensions["A"].width = 42
     for i in range(len(labels)):
         ws.column_dimensions[rc.col_letter(2 + i)].width = 18
-    ws.column_dimensions[rc.col_letter(rc.pivot_total_col(labels))].width = 18
+    ws.column_dimensions[rc.col_letter(rc.pivot_total_col(labels))].width = 22
     ws.freeze_panes = "B5"
 
     return {"sheet": name, "total_asset": total_asset_row, "total_equity": total_equity_row,
@@ -474,38 +424,10 @@ def write_quarterly_balance_sheet(wb, month_sheet_map, income_ref):
             "labels": labels, "total_col": rc.pivot_total_col(labels)}
 
 
-def sumif_kas_akhir(sheets_info):
-    parts = [f"'{sheet}'!$K${last_row}" for sheet, last_row in sheets_info]
-    return "=" + "+".join(parts) if parts else "=0"
-
-
-def sumif_saldo_awal(opening_info):
-    parts = [f"'{sheet}'!$K${row}" for sheet, row in opening_info]
-    return "=" + "+".join(parts) if parts else "=0"
-
-
-def sumif_modal_kumulatif(month_sheet_map, upto_label):
-    parts = []
-    for m in month_sheet_map:
-        parts.append(sumif_across_sheets(m["sheets"], "Modal & Setoran Pemilik")[1:])
-        if m["label"] == upto_label:
-            break
-    return "=" + "+".join(parts) if parts else "=0"
-
-
-def sumif_transfer_kumulatif(month_sheet_map, upto_label):
-    parts = []
-    for m in month_sheet_map:
-        parts.append(sumif_multi_across_sheets(m["sheets"], rc.TRANSFER_CATEGORY_TEXTS)[1:])
-        if m["label"] == upto_label:
-            break
-    return "=" + "+".join(parts) if parts else "=0"
-
-
-def laba_kumulatif_formula(income_ref, labels, current_col_letter):
+def laba_kumulatif_formula(income_ref, current_col_letter):
     """SUM kolom Laba Rugi dari bulan pertama s.d. kolom bulan ini
-    (kumulatif). current_col_letter adalah huruf kolom bulan (bukan kolom
-    TOTAL - itu ditangani otomatis lewat mirroring di write_snapshot_*)."""
+    (kumulatif) - rujukan lintas sheet (Neraca -> Laba Rugi Kuartal) tetap
+    aman karena kedua sheet itu ada di workbook output yang sama."""
     income_sheet = income_ref["sheet"]
     net_row = income_ref["net"]
     first_letter = rc.col_letter(2)
@@ -516,12 +438,12 @@ def laba_kumulatif_formula(income_ref, labels, current_col_letter):
 # Laporan Arus Kas Kuartal
 # ---------------------------------------------------------------------------
 
-def write_quarterly_cash_flow(wb, month_sheet_map, income_ref, balance_ref):
+def write_quarterly_cash_flow(wb, months, income_ref, balance_ref):
     name = "Arus Kas Kuartal"
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
-    labels = [m["label"] for m in month_sheet_map]
+    labels = [m["label"] for m in months]
     ws["A1"] = f"LAPORAN ARUS KAS KUARTALAN - {labels[0].upper()} S.D. {labels[-1].upper()}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = "Metode langsung, kolom = tiap bulan + TOTAL kuartal."
@@ -548,7 +470,7 @@ def write_quarterly_cash_flow(wb, month_sheet_map, income_ref, balance_ref):
     fin_row = r
     rc.write_pivot_data_row(
         ws, r, "Modal & Setoran Pemilik", labels,
-        lambda label: sumif_across_sheets(_sheets_for_label(month_sheet_map, label), "Modal & Setoran Pemilik"),
+        lambda label: sum_category(_txns_for_label(months, label), "Modal & Setoran Pemilik"),
     )
     r += 1
     total_fin_row = r
@@ -568,7 +490,7 @@ def write_quarterly_cash_flow(wb, month_sheet_map, income_ref, balance_ref):
         lambda cl: (
             f"='{balance_ref['sheet']}'!{rc.col_letter(2)}{balance_ref['saldo_awal']}"
             if cl == rc.col_letter(2)
-            else _saldo_awal_chain(cl, labels, net_change_row, saldo_awal_row, balance_ref)
+            else _saldo_awal_chain(cl, labels, net_change_row, saldo_awal_row)
         ),
     )
     r += 1
@@ -592,11 +514,11 @@ def write_quarterly_cash_flow(wb, month_sheet_map, income_ref, balance_ref):
     return ws
 
 
-def _saldo_awal_chain(cl, labels, net_change_row, saldo_awal_row, balance_ref):
+def _saldo_awal_chain(cl, labels, net_change_row, saldo_awal_row):
     """Saldo awal bulan ke-2 & ke-3 = saldo akhir bulan sebelumnya (kolom
     sebelah kiri di sheet yang sama). Kolom TOTAL kuartal = saldo awal
     bulan pertama (titik mula kuartal)."""
-    total_col_letter = rc.col_letter(rc.pivot_total_col(labels))
+    total_col_letter = rc.col_letter(len(labels) + 2)
     if cl == total_col_letter:
         return f"={rc.col_letter(2)}{saldo_awal_row}"
     idx = None
@@ -610,35 +532,31 @@ def _saldo_awal_chain(cl, labels, net_change_row, saldo_awal_row, balance_ref):
 
 
 # ---------------------------------------------------------------------------
-# Roster Gaji 3 Bulan (matriks: baris = pegawai, kolom = 3 bulan + TOTAL)
+# Roster Gaji 3 Bulan (matriks: baris = pegawai, kolom = 3 bulan + TOTAL).
+# Dikelompokkan berdasarkan bulan yang DISEBUT DI KETERANGAN transaksi
+# (basis accrual), dicari lintas semua bulan kuartal - lihat catatan di
+# docstring atas file ini.
 # ---------------------------------------------------------------------------
 
-def write_roster_gaji(wb, month_sheet_map):
+def _norm_name(name):
+    return " ".join(name.split()).casefold()
+
+
+def write_roster_gaji(wb, months):
     name = "Roster Gaji 3 Bulan"
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
-    labels = [m["label"] for m in month_sheet_map]
+    labels = [m["label"] for m in months]
     ws["A1"] = f"ROSTER GAJI PEGAWAI - {labels[0].upper()} S.D. {labels[-1].upper()}"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = ("Rumus SUMIFS: kategori Gaji* + Keterangan menyebut nama bulan kolom itu, dicari "
-                "LINTAS SEMUA sheet kuartal (bukan cuma sheet bulan itu) - supaya gaji yang telat "
-                f"dibayar/dicatat tetap masuk kolom bulan yang benar. Kalau kolom {labels[-1]} kosong "
-                "padahal pegawainya muncul di bulan lain, kemungkinan gajinya belum dibayar - lihat kolom Catatan.")
-    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
-
-    # kumpulkan semua nama pegawai unik dari kolom Objek pada baris berkategori
-    # Gaji* - DIKELOMPOKKAN BERDASARKAN BULAN YANG DISEBUT DI KETERANGAN
-    # (mis. "Gaji Eva Januari 2023" -> bulan Januari), BUKAN berdasarkan di
-    # sheet bulan mana transaksinya fisik tercatat. Gaji sering dibayar
-    # telat (gaji Januari baru dibayar/tercatat Februari), jadi kalau
-    # dikelompokkan per sheet, itu akan salah masuk kolom Februari padahal
-    # seharusnya kolom Januari. Nama pegawai dinormalisasi (spasi dirapikan
-    # + case-insensitive) supaya "Nama" dan " nama " tidak dianggap 2 orang.
-    def _norm_name(name):
-        return " ".join(name.split()).casefold()
-
     nama_bulan_list = [_nama_bulan_short(lb) for lb in labels]
+    ws["A2"] = ("Dikelompokkan berdasarkan bulan yang DISEBUT DI KETERANGAN transaksi (basis "
+                "accrual, mis. 'Gaji Eva Januari 2025'), dicari lintas semua bulan kuartal - "
+                f"supaya gaji yang telat dibayar/dicatat tetap masuk kolom bulan yang benar. Kalau "
+                f"kolom {labels[-1]} kosong padahal pegawainya muncul di bulan lain, kemungkinan "
+                "gajinya belum dibayar - lihat kolom Catatan.")
+    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     def _parse_bulan_dari_keterangan(ket):
         ket_lower = (ket or "").lower()
@@ -647,22 +565,23 @@ def write_roster_gaji(wb, month_sheet_map):
                 return nama
         return None
 
-    employees_by_month = [set() for _ in labels]  # index selaras dengan labels
+    employee_month_amount = {}  # (kunci-nama, idx-bulan) -> jumlah
+    employees_by_month = [set() for _ in labels]
     canonical_name = {}
     all_employee_keys = []
     n_gaji_luar_kuartal = 0
-    for m in month_sheet_map:
-        for sname, txns in m["txns_by_sheet"].items():
-            for t in txns:
-                if (t.kategori or "").lower().startswith("gaji") and t.objek:
-                    bulan_untuk = _parse_bulan_dari_keterangan(t.desc)
-                    if bulan_untuk is None:
-                        n_gaji_luar_kuartal += 1
-                        continue  # gaji untuk bulan di luar kuartal ini, lihat baris "Gaji Lainnya" di Laba Rugi Kuartal
-                    idx = nama_bulan_list.index(bulan_untuk)
-                    key = _norm_name(t.objek)
-                    employees_by_month[idx].add(key)
-                    canonical_name.setdefault(key, " ".join(t.objek.split()))
+    for m in months:
+        for t in m["all_txns"]:
+            if (t.kategori or "").lower().startswith("gaji") and t.objek:
+                bulan_untuk = _parse_bulan_dari_keterangan(t.desc)
+                if bulan_untuk is None:
+                    n_gaji_luar_kuartal += 1
+                    continue
+                idx = nama_bulan_list.index(bulan_untuk)
+                key = _norm_name(t.objek)
+                employees_by_month[idx].add(key)
+                canonical_name.setdefault(key, " ".join(t.objek.split()))
+                employee_month_amount[(key, idx)] = employee_month_amount.get((key, idx), 0.0) + t.nominal
     for idx in range(len(labels)):
         for key in sorted(employees_by_month[idx]):
             if key not in all_employee_keys:
@@ -676,16 +595,13 @@ def write_roster_gaji(wb, month_sheet_map):
     ws.cell(row=r, column=rc.pivot_total_col(labels) + 1).font = rc.HEADER_FONT
     r += 1
 
-    all_sheets_quarter = _all_sheets(month_sheet_map)
     n_belum_dibayar_bulan_terakhir = 0
     last_label = labels[-1]
     for key, emp in zip(all_employee_keys, all_employees):
         rc.write_pivot_data_row(
             ws, r, emp, labels,
-            lambda label, emp=emp: sumifs_employee_bulan_kuartal(all_sheets_quarter, emp, _nama_bulan_short(label)),
+            lambda label, key=key: employee_month_amount.get((key, labels.index(label)), 0.0),
         )
-        # cek python-side (bukan formula) apakah pegawai ini dapat gaji untuk
-        # bulan terakhir kuartal - kalau tidak, tapi muncul di bulan lain, kasih catatan
         paid_last_month = key in employees_by_month[-1]
         if not paid_last_month:
             n_belum_dibayar_bulan_terakhir += 1
@@ -696,7 +612,6 @@ def write_roster_gaji(wb, month_sheet_map):
             ws.cell(row=r, column=rc.pivot_total_col(labels) + 1).alignment = Alignment(wrap_text=True)
         r += 1
 
-    total_row = r
     if all_employees:
         first_data_row = 5
         last_data_row_ = r - 1
@@ -709,9 +624,9 @@ def write_roster_gaji(wb, month_sheet_map):
         ws.cell(row=r, column=1,
                 value=(f"Catatan: {n_gaji_luar_kuartal} baris transaksi berkategori Gaji* keterangannya "
                        "tidak menyebut salah satu dari 3 bulan kuartal ini (kemungkinan accrual dari "
-                       "bulan sebelum kuartal dimulai) - totalnya tetap dihitung di Laba Rugi Kuartal "
-                       "baris 'Gaji Lainnya', tapi tidak muncul di matriks roster ini karena tidak "
-                       "jelas masuk kolom bulan yang mana."))
+                       "bulan sebelum kuartal dimulai) - tetap terhitung dalam baris 'Gaji Pegawai' "
+                       "basis kas di Laba Rugi Kuartal, tapi tidak muncul di matriks roster ini karena "
+                       "tidak jelas masuk kolom bulan yang mana."))
         ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
         ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=rc.pivot_total_col(labels) + 1)
@@ -729,53 +644,251 @@ def write_roster_gaji(wb, month_sheet_map):
 
 
 # ---------------------------------------------------------------------------
+# Analisis & Tren (sheet ke-5): grafik + pembacaan tren naratif
+# ---------------------------------------------------------------------------
+
+def compute_month_summary(txns):
+    revenue = sum(sum_category(txns, c) for c in rc.INCOME_CATEGORIES_REVENUE)
+    expense = sum(sum_category(txns, c) for c in rc.INCOME_CATEGORIES_EXPENSE)
+    expense += sum_category_multi(txns, rc.MARKETING_RND_CATEGORY_TEXTS)
+    expense += sum_category_prefix(txns, "gaji")
+    expense += sum_category_multi(txns, rc.BANK_FEE_CATEGORY_TEXTS)
+    other = sum(sum_category(txns, c) for c in rc.OTHER_CATEGORIES)
+    net = revenue + expense + other
+    return revenue, expense, other, net
+
+
+def write_analysis_sheet(wb, months):
+    name = "Analisis & Tren"
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    labels = [m["label"] for m in months]
+    ws["A1"] = f"ANALISIS & TREN KEUANGAN - {labels[0].upper()} S.D. {labels[-1].upper()}"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = "Grafik dan pembacaan tren otomatis dari data 3 bulan di sheet Laba Rugi Kuartal & Neraca Kuartal."
+    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
+
+    summaries = [compute_month_summary(m["all_txns"]) for m in months]
+    revenues = [s[0] for s in summaries]
+    expenses = [s[1] for s in summaries]  # negatif
+    nets = [s[3] for s in summaries]
+    kas = [m["total_aset"] for m in months]
+
+    # --- tabel data 1: ringkasan per bulan (basis grafik garis) ---
+    r = 4
+    ws.cell(row=r, column=1, value="RINGKASAN PER BULAN (data grafik)")
+    ws.cell(row=r, column=1).font = rc.SECTION_FONT
+    ws.cell(row=r, column=1).fill = rc.SECTION_FILL
+    r += 1
+    hdr1 = r
+    headers1 = ["Bulan", "Pendapatan", "Beban", "Laba Bersih", "Kas Akhir"]
+    for i, h in enumerate(headers1, start=1):
+        ws.cell(row=hdr1, column=i, value=h)
+    rc.style_header(ws, hdr1, len(headers1))
+    r += 1
+    data1_start = r
+    for i, lb in enumerate(labels):
+        ws.cell(row=r, column=1, value=lb)
+        ws.cell(row=r, column=2, value=revenues[i])
+        ws.cell(row=r, column=3, value=abs(expenses[i]))
+        ws.cell(row=r, column=4, value=nets[i])
+        ws.cell(row=r, column=5, value=kas[i])
+        for c in range(2, 6):
+            ws.cell(row=r, column=c).number_format = rc.NUMBER_FORMAT
+        r += 1
+    data1_end = r - 1
+    r += 1
+
+    # --- tabel data 2: komposisi beban per kategori (basis grafik batang) ---
+    ws.cell(row=r, column=1, value="KOMPOSISI BEBAN PER KATEGORI (total kuartal)")
+    ws.cell(row=r, column=1).font = rc.SECTION_FONT
+    ws.cell(row=r, column=1).fill = rc.SECTION_FILL
+    r += 1
+    hdr2 = r
+    ws.cell(row=hdr2, column=1, value="Kategori")
+    ws.cell(row=hdr2, column=2, value="Total")
+    rc.style_header(ws, hdr2, 2)
+    r += 1
+    data2_start = r
+    all_txns_quarter = [t for m in months for t in m["all_txns"]]
+    expense_cats = list(rc.INCOME_CATEGORIES_EXPENSE) + ["Marketing & RnD", "Gaji Pegawai", "Biaya Admin Bank"]
+    expense_vals = []
+    for cat in rc.INCOME_CATEGORIES_EXPENSE:
+        expense_vals.append(abs(sum_category(all_txns_quarter, cat)))
+    expense_vals.append(abs(sum_category_multi(all_txns_quarter, rc.MARKETING_RND_CATEGORY_TEXTS)))
+    expense_vals.append(abs(sum_category_prefix(all_txns_quarter, "gaji")))
+    expense_vals.append(abs(sum_category_multi(all_txns_quarter, rc.BANK_FEE_CATEGORY_TEXTS)))
+    for cat, val in zip(expense_cats, expense_vals):
+        ws.cell(row=r, column=1, value=cat)
+        ws.cell(row=r, column=2, value=val)
+        ws.cell(row=r, column=2).number_format = rc.NUMBER_FORMAT
+        r += 1
+    data2_end = r - 1
+    r += 2
+
+    # --- grafik garis: Pendapatan vs Beban vs Laba Bersih ---
+    chart1 = LineChart()
+    chart1.title = "Pendapatan vs Beban vs Laba Bersih per Bulan"
+    chart1.style = 2
+    chart1.y_axis.title = "Rupiah"
+    chart1.x_axis.title = "Bulan"
+    cats = Reference(ws, min_col=1, min_row=data1_start, max_row=data1_end)
+    for col, name_seri in ((2, "Pendapatan"), (3, "Beban"), (4, "Laba Bersih")):
+        data = Reference(ws, min_col=col, min_row=hdr1, max_row=data1_end)
+        chart1.add_data(data, titles_from_data=True)
+    chart1.set_categories(cats)
+    chart1.width = 18
+    chart1.height = 9
+    chart_anchor_row = r
+    ws.add_chart(chart1, f"A{chart_anchor_row}")
+
+    # --- grafik garis: tren kas ---
+    chart2 = LineChart()
+    chart2.title = "Tren Kas Akhir Bulan"
+    chart2.style = 10
+    chart2.y_axis.title = "Rupiah"
+    chart2.x_axis.title = "Bulan"
+    data_kas = Reference(ws, min_col=5, min_row=hdr1, max_row=data1_end)
+    chart2.add_data(data_kas, titles_from_data=True)
+    chart2.set_categories(cats)
+    chart2.width = 18
+    chart2.height = 9
+    ws.add_chart(chart2, f"A{chart_anchor_row + 19}")
+
+    # --- grafik batang: komposisi beban ---
+    chart3 = BarChart()
+    chart3.type = "col"
+    chart3.title = "Komposisi Beban per Kategori (Total Kuartal)"
+    chart3.y_axis.title = "Rupiah"
+    chart3.style = 11
+    data_exp = Reference(ws, min_col=2, min_row=hdr2, max_row=data2_end)
+    cats_exp = Reference(ws, min_col=1, min_row=data2_start, max_row=data2_end)
+    chart3.add_data(data_exp, titles_from_data=True)
+    chart3.set_categories(cats_exp)
+    chart3.width = 18
+    chart3.height = 9
+    ws.add_chart(chart3, f"A{chart_anchor_row + 38}")
+
+    # --- narasi tren (dihitung Python, ditulis sebagai teks) ---
+    narasi_row = chart_anchor_row + 57
+    ws.cell(row=narasi_row, column=1, value="PEMBACAAN TREN")
+    ws.cell(row=narasi_row, column=1).font = rc.SECTION_FONT
+    ws.cell(row=narasi_row, column=1).fill = rc.SECTION_FILL
+    narasi_row += 1
+
+    kalimat = build_narasi_tren(labels, revenues, expenses, nets, kas, expense_cats, expense_vals)
+    for line in kalimat:
+        ws.cell(row=narasi_row, column=1, value=f"- {line}")
+        ws.cell(row=narasi_row, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=narasi_row, start_column=1, end_row=narasi_row, end_column=5)
+        ws.row_dimensions[narasi_row].height = 28
+        narasi_row += 1
+
+    ws.column_dimensions["A"].width = 30
+    for c in "BCDE":
+        ws.column_dimensions[c].width = 18
+
+    return ws
+
+
+def _pct_change(awal, akhir):
+    if awal == 0:
+        return None
+    return (akhir - awal) / abs(awal) * 100
+
+
+def build_narasi_tren(labels, revenues, expenses, nets, kas, expense_cats, expense_vals):
+    kalimat = []
+
+    # tren laba bersih
+    growth = _pct_change(nets[0], nets[-1])
+    if growth is None:
+        kalimat.append(
+            f"Laba bersih {labels[0]} tercatat Rp0, jadi persentase perubahan ke {labels[-1]} "
+            f"(Rp{nets[-1]:,.0f}) tidak bisa dihitung.".replace(",", ".")
+        )
+    else:
+        arah = "naik" if growth > 0 else ("turun" if growth < 0 else "stabil")
+        kalimat.append(
+            f"Laba bersih {arah} {abs(growth):,.1f}% dari {labels[0]} (Rp{nets[0]:,.0f}) ke "
+            f"{labels[-1]} (Rp{nets[-1]:,.0f}).".replace(",", ".")
+        )
+
+    # tren pendapatan
+    rev_growth = _pct_change(revenues[0], revenues[-1])
+    if rev_growth is not None:
+        arah = "naik" if rev_growth > 0 else ("turun" if rev_growth < 0 else "stabil")
+        kalimat.append(
+            f"Pendapatan {arah} {abs(rev_growth):,.1f}% dari {labels[0]} ke {labels[-1]}."
+            .replace(",", ".")
+        )
+
+    # bulan rugi
+    bulan_rugi = [lb for lb, n in zip(labels, nets) if n < 0]
+    if bulan_rugi:
+        kalimat.append(f"Rugi bersih terjadi di: {', '.join(bulan_rugi)}.")
+    else:
+        kalimat.append("Ketiga bulan di kuartal ini sama-sama mencatat laba bersih positif.")
+
+    # kategori beban terbesar
+    if expense_vals and sum(expense_vals) > 0:
+        idx_max = max(range(len(expense_vals)), key=lambda i: expense_vals[i])
+        total_beban = sum(expense_vals)
+        pct = expense_vals[idx_max] / total_beban * 100
+        kalimat.append(
+            f"Kategori beban terbesar sepanjang kuartal: {expense_cats[idx_max]} "
+            f"(Rp{expense_vals[idx_max]:,.0f})".replace(",", ".") +
+            f" - {pct:,.1f}% dari total beban.".replace(",", ".")
+        )
+
+    # tren kas
+    kas_growth = _pct_change(kas[0], kas[-1])
+    if kas_growth is not None:
+        arah = "naik" if kas_growth > 0 else ("turun" if kas_growth < 0 else "stabil")
+        kalimat.append(
+            f"Posisi kas {arah} {abs(kas_growth):,.1f}% dari Rp{kas[0]:,.0f} ({labels[0]}) ke "
+            f"Rp{kas[-1]:,.0f} ({labels[-1]}).".replace(",", ".")
+        )
+    kas_negatif = [lb for lb, k in zip(labels, kas) if k < 0]
+    if kas_negatif:
+        kalimat.append(
+            f"PERHATIAN: posisi kas negatif tercatat di akhir bulan: {', '.join(kas_negatif)} - "
+            "perlu ditelusuri manual."
+        )
+
+    return kalimat
+
+
+# ---------------------------------------------------------------------------
 # Orkestrasi utama
 # ---------------------------------------------------------------------------
 
 def run_quarterly_report(paths, output_path):
     """paths: list of 3 path file bulanan (urutan upload bebas, akan
-    disortir kronologis). Return dict ringkasan."""
+    disortir kronologis). Return dict ringkasan. Output HANYA 5 sheet:
+    Laba Rugi Kuartal, Neraca Kuartal, Arus Kas Kuartal, Roster Gaji 3
+    Bulan, Analisis & Tren - tidak ada sheet rekening mentah."""
     months = [load_month(p) for p in paths]
     months = validate_consecutive(months)
 
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
 
-    month_sheet_map = []  # list per bulan: {'label':.., 'sheets': [(new_name,last_row),...]}
-    for m in months:
-        label = f"{rc.MONTHS_ID[m['month']]} {m['year']}"
-        sheets_info = []
-        opening_info = []  # [(new_name, opening_row)]
-        for sname in m["account_sheets"]:
-            src_ws = m["wb"][sname]
-            new_title = sname
-            suffix = 2
-            while new_title in out_wb.sheetnames:
-                new_title = f"{sname[:28]} ({suffix})"
-                suffix += 1
-            copy_sheet_into(src_ws, out_wb, new_title)
-            sheets_info.append((new_title, m["sheets_last_row"][sname]))
-            opening_info.append((new_title, m["opening_rows"][sname]))
-        month_sheet_map.append({
-            "label": label, "sheets": sheets_info, "opening": opening_info,
-            "year": m["year"], "month": m["month"], "txns_by_sheet": m["txns_by_sheet"],
-        })
+    income_ref = write_quarterly_income_statement(out_wb, months)
+    balance_ref = write_quarterly_balance_sheet(out_wb, months, income_ref)
+    write_quarterly_cash_flow(out_wb, months, income_ref, balance_ref)
+    roster_summary = write_roster_gaji(out_wb, months)
+    write_analysis_sheet(out_wb, months)
 
-    income_ref = write_quarterly_income_statement(out_wb, month_sheet_map)
-    balance_ref = write_quarterly_balance_sheet(out_wb, month_sheet_map, income_ref)
-    write_quarterly_cash_flow(out_wb, month_sheet_map, income_ref, balance_ref)
-    roster_summary = write_roster_gaji(out_wb, month_sheet_map)
-
-    order = []
-    for m in month_sheet_map:
-        order += [s for s, _ in m["sheets"]]
-    order += ["Laba Rugi Kuartal", "Neraca Kuartal", "Arus Kas Kuartal", "Roster Gaji 3 Bulan"]
+    order = ["Laba Rugi Kuartal", "Neraca Kuartal", "Arus Kas Kuartal",
+             "Roster Gaji 3 Bulan", "Analisis & Tren"]
     out_wb._sheets = [out_wb[s] for s in order]
 
     out_wb.save(output_path)
 
     return {
-        "periode": [m["label"] for m in month_sheet_map],
+        "periode": [m["label"] for m in months],
         "n_pegawai": roster_summary["n_pegawai"],
         "n_belum_dibayar_bulan_terakhir": roster_summary["n_belum_dibayar_bulan_terakhir"],
     }
