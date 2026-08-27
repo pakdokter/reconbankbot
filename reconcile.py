@@ -152,7 +152,7 @@ CLOSING_SUMMARY_KEYWORDS = [
 ]
 
 
-def is_closing_summary_row(tanggal, kategori, keterangan):
+def is_closing_summary_row(tanggal, kategori, keterangan, is_first_row=False):
     """Deteksi baris rekap penutup (Saldo Awal/Saldo Akhir/Total Debit/Total
     Kredit) yang kadang ada di baris-baris akhir sheet rekening sebagai
     ringkasan, BUKAN transaksi. Kalau ikut dimasukkan ke rekonstruksi saldo
@@ -162,16 +162,18 @@ def is_closing_summary_row(tanggal, kategori, keterangan):
 
     Dua sinyal dipakai sekaligus:
     1. Kata kunci eksplisit (saldo akhir/total debit/total kredit) - ini
-       jelas bukan transaksi apapun formatnya.
-    2. Baris tanpa tanggal tapi ada teks kategori/keterangan - transaksi asli
-       di format ini selalu bertanggal, jadi baris berlabel tanpa tanggal
-       (mis. 'Saldo Awal' yang diulang di rekap penutup) juga dianggap
-       bagian dari blok rekap, bukan transaksi kedua yang terpisah dari
-       baris Saldo Awal asli di baris pertama."""
+       jelas bukan transaksi apapun formatnya, di baris manapun.
+    2. Baris tanpa tanggal tapi ada teks kategori/keterangan - transaksi
+       biasa selalu bertanggal, jadi baris berlabel tanpa tanggal (mis.
+       'Saldo Awal' yang diulang di rekap penutup) juga dianggap bagian
+       dari blok rekap. TAPI sinyal ini TIDAK dipakai untuk baris data
+       PERTAMA (is_first_row=True) - baris Saldo Awal/Saldo Awal Bulan yang
+       legitimate di baris pertama kadang memang tidak diisi tanggal, dan
+       itu bukan blok penutup, itu deklarasi saldo awal yang sah."""
     text = f"{kategori or ''} {keterangan or ''}".strip().lower()
     if any(kw in text for kw in CLOSING_SUMMARY_KEYWORDS):
         return True
-    if tanggal is None and text:
+    if not is_first_row and tanggal is None and text:
         return True
     return False
 
@@ -184,13 +186,16 @@ def read_account_sheet(ws):
     ditangkap terpisah sebagai acuan cross-check (lihat closing_info)."""
     txns = []
     closing_info = {}
+    seen_first_row = False
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         tanggal, ket, kategori, debit, kredit, saldo, subjek, objek, ket_tambahan = (
             (c.value for c in row[:9])
         )
         if tanggal is None and ket is None and debit is None and kredit is None:
             continue
-        if is_closing_summary_row(tanggal, kategori, ket):
+        is_first = not seen_first_row
+        seen_first_row = True
+        if is_closing_summary_row(tanggal, kategori, ket, is_first_row=is_first):
             label = f"{kategori or ''} {ket or ''}".strip().lower()
             value = None
             for cand in (debit, kredit, saldo):
@@ -224,13 +229,17 @@ def read_account_sheet(ws):
 
 def last_data_row(ws):
     last = 1
+    seen_first_row = False
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         tanggal, ket, kategori, debit, kredit = (c.value for c in row[:5])
-        if is_closing_summary_row(tanggal, kategori, ket):
+        if not any(v is not None for v in (tanggal, ket, kategori, debit, kredit)):
+            continue  # baris kosong, jangan dianggap baris data pertama
+        is_first = not seen_first_row
+        seen_first_row = True
+        if is_closing_summary_row(tanggal, kategori, ket, is_first_row=is_first):
             break  # blok rekap penutup (Saldo Akhir/Total Debit/Kredit) -
             # berhenti di sini, jangan ikut dihitung sebagai baris transaksi
-        if any(v is not None for v in (tanggal, ket, kategori, debit, kredit)):
-            last = row[0].row
+        last = row[0].row
     return last
 
 
