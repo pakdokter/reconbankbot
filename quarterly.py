@@ -55,14 +55,20 @@ def compute_sheet_k(txns):
     """Replikasi rumus K2=$F$2, K(n)=K(n-1)+J(n) yang dipakai reconcile.py
     (kolom bantu Saldo Kumulatif Rekonstruksi), tapi dihitung di Python
     supaya tidak perlu sheet rekening tetap ada di workbook output.
-    Return (saldo_awal, saldo_akhir) untuk satu sheet."""
+    Return (saldo_awal, saldo_akhir) untuk satu sheet.
+
+    Dibulatkan ke 2 desimal (presisi sen rupiah) supaya noise floating-point
+    dari penjumlahan beruntun banyak transaksi tidak menumpuk jadi selisih
+    kecil (mis. Rp0,64) waktu dibandingkan dengan total yang dihitung lewat
+    jalur penjumlahan lain (per kategori) - dua jalur sama-sama benar tapi
+    urutan penjumlahannya beda, jadi tanpa pembulatan bisa sedikit meleset."""
     if not txns:
         return 0.0, 0.0
     opening = txns[0].saldo if txns[0].saldo is not None else 0.0
     running = opening
     for t in txns[1:]:
         running += t.nominal
-    return opening, running
+    return round(opening, 2), round(running, 2)
 
 
 def load_month(path):
@@ -82,6 +88,8 @@ def load_month(path):
         opening, closing = compute_sheet_k(txns)
         total_saldo_awal += opening
         total_aset += closing
+    total_saldo_awal = round(total_saldo_awal, 2)
+    total_aset = round(total_aset, 2)
     year, month = rc.detect_period(all_txns)
     if year is None:
         raise QuarterlyInputError(f"Periode tidak terdeteksi di file '{path}'.")
@@ -125,17 +133,17 @@ def validate_consecutive(months):
 
 def sum_category(txns, category):
     cat = category.lower()
-    return sum(t.nominal for t in txns if (t.kategori or "").lower() == cat)
+    return round(sum(t.nominal for t in txns if (t.kategori or "").lower() == cat), 2)
 
 
 def sum_category_multi(txns, categories):
     cats = {c.lower() for c in categories}
-    return sum(t.nominal for t in txns if (t.kategori or "").lower() in cats)
+    return round(sum(t.nominal for t in txns if (t.kategori or "").lower() in cats), 2)
 
 
 def sum_category_prefix(txns, prefix):
     p = prefix.lower()
-    return sum(t.nominal for t in txns if (t.kategori or "").lower().startswith(p))
+    return round(sum(t.nominal for t in txns if (t.kategori or "").lower().startswith(p)), 2)
 
 
 def _txns_for_label(months, label):
@@ -370,7 +378,7 @@ def write_quarterly_balance_sheet(wb, months, income_ref):
     modal_kumulatif = []
     running = 0.0
     for v in modal_per_month:
-        running += v
+        running = round(running + v, 2)
         modal_kumulatif.append(running)
     write_snapshot_data_row(
         ws, r, "Modal & Setoran Pemilik (kumulatif s.d. bulan ini)", labels,
@@ -399,7 +407,7 @@ def write_quarterly_balance_sheet(wb, months, income_ref):
     transfer_kumulatif = []
     running = 0.0
     for v in transfer_per_month:
-        running += v
+        running = round(running + v, 2)
         transfer_kumulatif.append(running)
     write_snapshot_data_row(
         ws, r, "Transfer Bersih Kumulatif (info)", labels,
@@ -410,6 +418,45 @@ def write_quarterly_balance_sheet(wb, months, income_ref):
     write_snapshot_formula_row(
         ws, r, "Selisih Belum Terjelaskan", labels,
         lambda cl: f"={cl}{balance_check_row}-{cl}{transfer_row}",
+        bold=True,
+    )
+    r += 3
+
+    # ------------------------------------------------------------------
+    # RINGKASAN & PROGRES BULANAN - sengaja dipisah dari bagian Ekuitas di
+    # atas (yang kumulatif, untuk kebutuhan akuntansi formal). Bagian ini
+    # murni angka PER BULAN (bukan akumulasi sampai bulan itu), supaya bisa
+    # langsung lihat performa bulan tertentu tanpa harus mengurangi angka
+    # kumulatif secara manual. Kolom TOTAL di sini = jumlah 3 bulan (wajar
+    # dijumlah karena semuanya angka arus/delta, bukan saldo/snapshot).
+    # ------------------------------------------------------------------
+    ws.cell(row=r, column=1, value="RINGKASAN & PROGRES BULANAN (non-kumulatif)")
+    ws.cell(row=r, column=1).font = Font(bold=True, size=12)
+    r += 1
+    ws.cell(row=r, column=1,
+            value=("Angka per bulan berdiri sendiri (bukan akumulasi) - beda dengan bagian EKUITAS "
+                   "di atas yang sengaja kumulatif untuk kebutuhan Neraca formal."))
+    ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+    r += 2
+
+    rc.write_pivot_header(ws, r, labels)
+    r += 1
+    modal_bulan_row = r
+    rc.write_pivot_data_row(
+        ws, r, "Modal Masuk Bulan Ini (bukan kumulatif)", labels,
+        lambda label: modal_per_month[labels.index(label)],
+    )
+    r += 1
+    laba_bulan_row = r
+    rc.write_pivot_formula_row(
+        ws, r, "Laba/Rugi Bulan Ini", labels,
+        lambda cl: f"='{income_ref['sheet']}'!{cl}{income_ref['net']}",
+    )
+    r += 1
+    kas_bulan_row = r
+    rc.write_pivot_formula_row(
+        ws, r, "Perubahan Kas Bersih Bulan Ini (vs bulan sebelumnya)", labels,
+        lambda cl: _perubahan_kas_formula(cl, labels, total_asset_row, saldo_awal_row),
         bold=True,
     )
 
@@ -432,6 +479,22 @@ def laba_kumulatif_formula(income_ref, current_col_letter):
     net_row = income_ref["net"]
     first_letter = rc.col_letter(2)
     return f"=SUM('{income_sheet}'!{first_letter}{net_row}:{current_col_letter}{net_row})"
+
+
+def _perubahan_kas_formula(cl, labels, total_asset_row, saldo_awal_row):
+    """Perubahan kas bulan ini = Kas bulan ini - Kas bulan sebelumnya (atau
+    Saldo Awal Kuartal untuk bulan pertama). Kolom TOTAL = perubahan
+    sepanjang kuartal (kas bulan terakhir - saldo awal kuartal), sama
+    hasilnya dengan menjumlah 3 perubahan bulanan (teleskopik)."""
+    total_col_letter = rc.col_letter(len(labels) + 2)
+    if cl == total_col_letter:
+        last_month_letter = rc.col_letter(len(labels) + 1)
+        return f"={last_month_letter}{total_asset_row}-{rc.col_letter(2)}{saldo_awal_row}"
+    idx = next(i for i in range(len(labels)) if rc.col_letter(2 + i) == cl)
+    if idx == 0:
+        return f"={cl}{total_asset_row}-{rc.col_letter(2)}{saldo_awal_row}"
+    prev_letter = rc.col_letter(2 + idx - 1)
+    return f"={cl}{total_asset_row}-{prev_letter}{total_asset_row}"
 
 
 # ---------------------------------------------------------------------------
