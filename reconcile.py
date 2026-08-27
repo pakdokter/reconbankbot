@@ -786,11 +786,14 @@ def gaji_category_patterns(period_month):
 
 
 # Biaya admin, biaya admin transfer (Fliptech, auto dari Rekonsiliasi), bunga,
-# dan pajak bank digabung jadi SATU baris "Biaya Admin & Bunga Bank" - dulu
-# terpecah karena bank berbeda pakai istilah berbeda (Biaya Admin & Pajak
-# Bank / Biaya Admin dan Bunga Bank / Bunga dan Admin Bank), padahal secara
-# ekonomi sama-sama biaya jasa perbankan.
+# dan pajak bank digabung jadi SATU baris "Biaya Admin Bank" - dulu terpecah
+# karena bank/versi parser beda pakai istilah berbeda (Biaya Admin & Pajak
+# Bank / Biaya Admin dan Bunga Bank / Bunga dan Admin Bank / kini disatukan
+# jadi "Biaya Admin Bank" di parser terbaru), padahal secara ekonomi
+# sama-sama biaya jasa perbankan. Daftar lama tetap disertakan supaya file
+# historis yang masih pakai istilah lama tetap tertangkap.
 BANK_FEE_CATEGORY_TEXTS = [
+    "Biaya Admin Bank",
     "Biaya Admin & Pajak Bank",
     "Biaya Admin dan Bunga Bank",
     "Bunga dan Admin Bank",
@@ -969,13 +972,13 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     )
     exp_rows.append(r)
     r += 1
-    # Biaya Admin & Bunga Bank: gabungan biaya admin bank, biaya admin
+    # Biaya Admin Bank: gabungan biaya admin bank, biaya admin
     # transfer (mis. via Fliptech, auto-terdeteksi dari Rekonsiliasi kolom
     # N/O), bunga, dan pajak bank - dulu terpecah jadi beberapa baris karena
-    # tiap bank pakai istilah beda, sekarang satu baris saja
+    # tiap bank/versi parser pakai istilah beda, sekarang satu baris saja
     fee_row = r
     write_pivot_data_row(
-        ws, r, "Biaya Admin & Bunga Bank (termasuk biaya transfer Fliptech)", sheets,
+        ws, r, "Biaya Admin Bank (termasuk biaya transfer Fliptech)", sheets,
         lambda sheet: (
             f"={sumif_multi_one_sheet(sheet, sheets_last_row[sheet], BANK_FEE_CATEGORY_TEXTS)[1:]}"
             f"-SUMIFS('Rekonsiliasi'!$O${recon_range['data_start']}:$O${recon_range['data_end']},"
