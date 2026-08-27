@@ -1223,15 +1223,44 @@ MONTHS_ID = [
 ]
 
 
+def coerce_date(value):
+    """Ubah nilai tanggal dari sumber manapun (datetime.datetime,
+    datetime.date, atau teks format umum) jadi datetime.date. Dipakai
+    supaya file lama/preformatted yang kolom tanggalnya bukan objek
+    datetime asli (mis. tersimpan sebagai teks) tetap bisa dideteksi
+    periodenya. Return None kalau tidak bisa diparse."""
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y",
+                    "%d-%b-%y", "%d-%b-%Y", "%d %B %Y", "%m/%d/%Y"):
+            try:
+                return datetime.datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
 def detect_period_label(all_txns):
     """Tebak label bulan/tahun laporan dari tanggal transaksi yang paling
-    sering muncul (bukan hardcode), dipakai di judul-judul laporan."""
+    sering muncul (bukan hardcode), dipakai di judul-judul laporan.
+
+    Menerima datetime.datetime MAUPUN datetime.date murni (mis. dari file
+    lama/preformatted yang tanggalnya tersimpan tanpa komponen jam), dan
+    juga tanggal yang tersimpan sebagai teks - kalau cuma cek
+    datetime.datetime, file dengan kolom tanggal bertipe lain akan gagal
+    terdeteksi periodenya walau pencocokan transfer tetap normal
+    (days_between sudah lebih longgar, tapi fungsi ini sebelumnya belum)."""
     from collections import Counter
 
     counts = Counter()
     for t in all_txns:
-        if isinstance(t.date, datetime.datetime):
-            counts[(t.date.year, t.date.month)] += 1
+        d = coerce_date(t.date)
+        if d is not None:
+            counts[(d.year, d.month)] += 1
     if not counts:
         return "PERIODE TIDAK TERDETEKSI"
     (year, month), _ = counts.most_common(1)[0]
@@ -1241,7 +1270,8 @@ def detect_period_label(all_txns):
 def detect_period_end_date(all_txns, year_month_label):
     """Tanggal terakhir transaksi pada bulan yang terdeteksi, dipakai untuk
     judul Neraca ('per tanggal X')."""
-    dated = [t.date for t in all_txns if isinstance(t.date, datetime.datetime)]
+    dated = [coerce_date(t.date) for t in all_txns]
+    dated = [d for d in dated if d is not None]
     if not dated:
         return ""
     last = max(dated)
