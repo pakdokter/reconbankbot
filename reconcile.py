@@ -757,32 +757,44 @@ INCOME_CATEGORIES_EXPENSE = [
     "Belanja Bahan",
     "Belanja Operasional",
     "Belanja Konsumsi",
-    "Marketing",
     "Reparasi",
 ]
 
+# Marketing dan Riset dan Pengembangan (RnD) digabung jadi satu baris -
+# dulu "Riset dan Pengembangan" (kategori baru, dipicu keyword "Pelatihan")
+# tidak terdaftar sama sekali di INCOME_CATEGORIES_EXPENSE, jadi uangnya
+# hilang dari Laba Rugi (sumber selisih Neraca di BCA).
+MARKETING_RND_CATEGORY_TEXTS = ["Marketing", "Riset dan Pengembangan"]
+
 # Gaji: dulu satu baris per "Gaji <Bulan> <Tahun>" (mis. "Gaji Desember 2024")
-# yang berarti daftar kategori harus terus ditambah tiap tahun. Sekarang
-# pakai kategori umum yang durabel + wildcard "Gaji*" sebagai jaring pengaman
-# supaya label lama/berbeda (termasuk yang sudah ada di data historis) tetap
-# ketangkep tanpa perlu didaftar satu-satu di kode.
 # Gaji: dulu satu baris per "Gaji <Bulan> <Tahun>" (mis. "Gaji Desember 2024")
-# yang berarti daftar kategori harus terus ditambah tiap tahun. Sekarang
-# ditentukan dinamis dari bulan periode yang terdeteksi: "Gaji <bulan ini>"
-# = beban gaji bulan berjalan, "Gaji <bulan lalu>" = accrual (gaji bulan
-# sebelumnya yang baru dibayar/dicatat bulan ini). Wildcard "*" di akhir
-# supaya tetap cocok baik kategorinya pakai tahun (mis. "Gaji Desember 2024")
-# atau tidak (mis. "Gaji Desember" saja).
+# yang berarti daftar kategori harus terus ditambah tiap tahun, dan asumsi
+# lama (info bulan ada di kolom Kategori) ternyata tidak berlaku di semua
+# parser - versi bank ("preformatted") pakai Kategori tetap "Gaji Pegawai"
+# untuk SEMUA gaji, info bulannya cuma ada di Keterangan (mis. "Gaji
+# Latifatul Husna Januari"). Makanya deteksi bulan ini/lalu sekarang
+# dicocokkan ke kolom KETERANGAN (bukan Kategori), dengan Kategori cuma
+# dipakai untuk memastikan barisnya memang tentang gaji (wildcard "Gaji*").
 def gaji_category_patterns(period_month):
-    """Return (pola_bulan_ini, pola_bulan_lalu, nama_bulan_ini, nama_bulan_lalu)
-    berdasarkan nomor bulan periode (1-12). Kalau bulan tidak terdeteksi,
-    fallback ke pola generik "Gaji Bulan Ini"/"Gaji Accrual" apa adanya."""
+    """Return (nama_bulan_ini, nama_bulan_lalu) berdasarkan nomor bulan
+    periode (1-12). Kalau bulan tidak terdeteksi, return (None, None)."""
     if not period_month:
-        return "Gaji Bulan Ini*", "Gaji Accrual*", "Bulan Ini", "Accrual"
+        return None, None
     prev_month = 12 if period_month == 1 else period_month - 1
-    nama_ini = MONTHS_ID[period_month]
-    nama_lalu = MONTHS_ID[prev_month]
-    return f"Gaji {nama_ini}*", f"Gaji {nama_lalu}*", nama_ini, nama_lalu
+    return MONTHS_ID[period_month], MONTHS_ID[prev_month]
+
+
+def sumif_gaji_bulan_formula(sheet, last_row, nama_bulan):
+    """SUMIFS: baris berkategori 'Gaji*' DAN keterangannya menyebut nama
+    bulan tertentu (mis. '*Januari*') - menangani baik gaya lama (bulan ada
+    di Kategori) maupun gaya baru/bank (Kategori tetap 'Gaji Pegawai', bulan
+    cuma disebut di Keterangan)."""
+    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_b = f"'{sheet}'!$B$2:$B${last_row}"
+    rng_j = f"'{sheet}'!$J$2:$J${last_row}"
+    if not nama_bulan:
+        return f"=SUMIF({rng_c},\"Gaji*\",{rng_j})"
+    return f"=SUMIFS({rng_j},{rng_c},\"Gaji*\",{rng_b},\"*{nama_bulan}*\")"
 
 
 # Biaya admin, biaya admin transfer (Fliptech, auto dari Rekonsiliasi), bunga,
@@ -902,18 +914,18 @@ def sumif_one_sheet(sheet, last_row, category):
             f"'{sheet}'!$J$2:$J${last_row})")
 
 
-def sumif_gaji_lainnya_formula(sheet, last_row, known_patterns):
-    """Jaring pengaman: tangkap semua kategori yang diawali 'Gaji' TAPI bukan
-    salah satu pola bulan berjalan/accrual yang sudah dihitung terpisah (mis.
-    label lama 'Gaji Desember 2024' dari bulan yang bukan bulan ini/lalu,
-    atau label lain yang tidak terduga) - supaya tidak ada beban gaji yang
-    diam-diam hilang dari Laba Rugi hanya karena istilah kategorinya beda
-    dari yang diharapkan."""
+def sumif_gaji_lainnya_formula(sheet, last_row, nama_bulan_list):
+    """Jaring pengaman: tangkap semua baris berkategori 'Gaji*' TAPI
+    keterangannya tidak menyebut bulan ini/lalu (mis. gaji utuh dari bulan
+    lain, atau baris gaji tanpa nama bulan sama sekali) - supaya tidak ada
+    beban gaji yang diam-diam hilang dari Laba Rugi."""
     rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     parts = [f"SUMIF({rng_c},\"Gaji*\",{rng_j})"]
-    for pat in known_patterns:
-        parts.append(f"SUMIF({rng_c},\"{pat}\",{rng_j})")
+    for nama_bulan in nama_bulan_list:
+        if nama_bulan:
+            parts.append(f"SUMIFS({rng_j},{rng_c},\"Gaji*\",{rng_b},\"*{nama_bulan}*\")")
     return "=" + parts[0] + "".join(f"-{p}" for p in parts[1:])
 
 
@@ -953,22 +965,29 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
                               lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
-    # Gaji: pola dinamis dari bulan periode (bukan daftar tahun hardcode) -
-    # "Gaji <bulan ini>" = beban gaji bulan berjalan, "Gaji <bulan lalu>" =
-    # accrual, plus "Gaji Lainnya" sebagai jaring pengaman wildcard untuk
-    # label historis (mis. "Gaji Desember 2024" dari bulan selain 2 di atas)
-    pat_ini, pat_lalu, nama_ini, nama_lalu = gaji_category_patterns(period_month)
-    write_pivot_data_row(ws, r, f"Gaji Bulan Ini (Gaji {nama_ini})", sheets,
-                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], pat_ini))
+    write_pivot_data_row(
+        ws, r, "Marketing & RnD", sheets,
+        lambda sheet: sumif_multi_one_sheet(sheet, sheets_last_row[sheet], MARKETING_RND_CATEGORY_TEXTS),
+    )
     exp_rows.append(r)
     r += 1
-    write_pivot_data_row(ws, r, f"Gaji Accrual (Gaji {nama_lalu})", sheets,
-                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], pat_lalu))
+    # Gaji: dicocokkan lewat KETERANGAN (bukan Kategori) supaya konsisten
+    # baik format lama (bulan ada di Kategori) maupun format bank/preformatted
+    # (Kategori tetap "Gaji Pegawai", bulan cuma disebut di Keterangan, mis.
+    # "Gaji Latifatul Husna Januari"). "Gaji <bulan ini>" = beban berjalan,
+    # "Gaji <bulan lalu>" = accrual, "Gaji Lainnya" = jaring pengaman.
+    nama_ini, nama_lalu = gaji_category_patterns(period_month)
+    write_pivot_data_row(ws, r, f"Gaji Bulan Ini (Gaji {nama_ini or 'Bulan Ini'})", sheets,
+                          lambda sheet: sumif_gaji_bulan_formula(sheet, sheets_last_row[sheet], nama_ini))
+    exp_rows.append(r)
+    r += 1
+    write_pivot_data_row(ws, r, f"Gaji Accrual (Gaji {nama_lalu or 'Accrual'})", sheets,
+                          lambda sheet: sumif_gaji_bulan_formula(sheet, sheets_last_row[sheet], nama_lalu))
     exp_rows.append(r)
     r += 1
     write_pivot_data_row(
-        ws, r, "Gaji Lainnya (kategori historis/lain, tertangkap wildcard)", sheets,
-        lambda sheet: sumif_gaji_lainnya_formula(sheet, sheets_last_row[sheet], [pat_ini, pat_lalu]),
+        ws, r, "Gaji Lainnya (bulan lain/tidak disebutkan)", sheets,
+        lambda sheet: sumif_gaji_lainnya_formula(sheet, sheets_last_row[sheet], [nama_ini, nama_lalu]),
     )
     exp_rows.append(r)
     r += 1
