@@ -14,20 +14,28 @@ hanya keluar kalau ditrigger:
 2. Kirim file dulu (dapat hasil recon-only), lalu kirim /laporan untuk
    generate ulang file yang sama + 3 sheet laporan keuangan.
 
+Fungsi TAMBAHAN: laporan keuangan KUARTALAN. Trigger /kuartal dulu, baru
+upload 3 file hasil rekonsiliasi bulanan yang SUDAH completed (bulan harus
+berurutan). Outputnya cuma Laba Rugi/Neraca/Arus Kas + Roster Gaji 3 bulan
+(bukan rekonsiliasi baru - itu sudah beres di masing-masing file bulanan).
+
 Environment variable yang dibutuhkan:
 - BOT_TOKEN : token bot dari BotFather
 """
 
 import logging
 import os
+import shutil
 import tempfile
 import time
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.error import Conflict, NetworkError
 
 from reconcile import run_reconciliation
+from quarterly import run_quarterly_report, QuarterlyInputError
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -43,6 +51,10 @@ CACHE_DIR = os.path.join(tempfile.gettempdir(), "reconbot_cache")
 CACHE_TTL = 6 * 3600  # 6 jam
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# staging file buat mode /kuartal (3 file per user, ditumpuk sampai lengkap)
+QUARTER_DIR = os.path.join(tempfile.gettempdir(), "reconbot_quarter")
+os.makedirs(QUARTER_DIR, exist_ok=True)
+
 LAPORAN_TRIGGER_WORDS = ["laporan", "lengkap", "statement", "financial"]
 
 WELCOME = (
@@ -56,7 +68,8 @@ WELCOME = (
     "Kalau butuh Laporan Laba Rugi, Neraca, dan Arus Kas juga (rumus "
     "Excel beralamat absolut), ada 2 cara:\n"
     "1. Tambahkan kata *laporan* di caption waktu upload file, atau\n"
-    "2. Kirim /laporan setelah upload (pakai file yang sama, tanpa upload ulang)"
+    "2. Kirim /laporan setelah upload (pakai file yang sama, tanpa upload ulang)\n\n"
+    "Butuh laporan KUARTALAN (3 bulan sekaligus)? Kirim /kuartal."
 )
 
 
@@ -70,6 +83,10 @@ def _cleanup_cache():
         fpath = os.path.join(CACHE_DIR, fname)
         if os.path.isfile(fpath) and now - os.path.getmtime(fpath) > CACHE_TTL:
             os.remove(fpath)
+
+
+def _quarter_user_dir(user_id):
+    return os.path.join(QUARTER_DIR, str(user_id))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,6 +161,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kirim file .xlsx ya, format lain belum didukung.")
         return
 
+    if context.user_data.get("kuartal_mode"):
+        await handle_quarterly_document(update, context, doc)
+        return
+
     _cleanup_cache()
     user_id = update.effective_user.id
     cache_path = _cache_path(user_id)
@@ -168,15 +189,136 @@ async def laporan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _process_and_reply(update, cache_path, with_statements=True)
 
 
+# ---------------------------------------------------------------------------
+# Mode /kuartal: trigger dulu, baru upload 3 file bulanan yang sudah
+# completed (bulan harus berurutan)
+# ---------------------------------------------------------------------------
+
+async def kuartal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_dir = _quarter_user_dir(user_id)
+    shutil.rmtree(user_dir, ignore_errors=True)
+    os.makedirs(user_dir, exist_ok=True)
+    context.user_data["kuartal_mode"] = True
+    context.user_data["kuartal_files"] = []
+    await update.message.reply_text(
+        "Mode laporan kuartalan aktif. Upload 3 file hasil rekonsiliasi bulanan yang "
+        "sudah *completed* (bulan harus berurutan, urutan upload bebas - nanti "
+        "diurutkan otomatis).\n\n"
+        "Kirim /batal kalau mau keluar dari mode ini.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("kuartal_mode"):
+        await update.message.reply_text("Tidak ada proses yang bisa dibatalkan.")
+        return
+    user_id = update.effective_user.id
+    shutil.rmtree(_quarter_user_dir(user_id), ignore_errors=True)
+    context.user_data["kuartal_mode"] = False
+    context.user_data["kuartal_files"] = []
+    await update.message.reply_text("Mode laporan kuartalan dibatalkan.")
+
+
+async def handle_quarterly_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    user_id = update.effective_user.id
+    user_dir = _quarter_user_dir(user_id)
+    os.makedirs(user_dir, exist_ok=True)
+    files = context.user_data.setdefault("kuartal_files", [])
+
+    idx = len(files) + 1
+    dest_path = os.path.join(user_dir, f"bulan_{idx}.xlsx")
+    tg_file = await doc.get_file()
+    await tg_file.download_to_drive(dest_path)
+    files.append(dest_path)
+
+    if len(files) < 3:
+        await update.message.reply_text(f"Diterima ({len(files)}/3). Upload {3 - len(files)} file lagi.")
+        return
+
+    status_msg = await update.message.reply_text("3 file diterima, memproses laporan kuartalan...")
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = os.path.join(tmp, "kuartal.xlsx")
+        try:
+            summary = run_quarterly_report(files, output_path)
+        except QuarterlyInputError as e:
+            await status_msg.edit_text(f"Gagal: {e}\n\nKirim /kuartal lagi untuk coba ulang.")
+            context.user_data["kuartal_mode"] = False
+            context.user_data["kuartal_files"] = []
+            shutil.rmtree(user_dir, ignore_errors=True)
+            return
+        except Exception as e:
+            logger.exception("Gagal memproses laporan kuartalan")
+            await status_msg.edit_text(
+                f"Gagal memproses: {e}\n\nCek apakah ketiga file itu benar hasil rekonsiliasi "
+                "bulanan yang sudah completed. Kirim /kuartal lagi untuk coba ulang."
+            )
+            context.user_data["kuartal_mode"] = False
+            context.user_data["kuartal_files"] = []
+            shutil.rmtree(user_dir, ignore_errors=True)
+            return
+
+        periode = summary["periode"]
+        final_filename = f"Laporan Kuartalan - {periode[0]} s.d. {periode[-1]}.xlsx"
+        caption_lines = [
+            f"Laporan kuartalan {periode[0]} - {periode[-1]} selesai.",
+            "",
+            f"Jumlah pegawai di roster gaji: {summary['n_pegawai']}",
+        ]
+        if summary["n_belum_dibayar_bulan_terakhir"] > 0:
+            caption_lines.append(
+                f"{summary['n_belum_dibayar_bulan_terakhir']} pegawai belum tercatat "
+                f"dibayar di bulan terakhir ({periode[-1]}) - lihat kolom Catatan di "
+                "sheet Roster Gaji, kemungkinan dibebankan sebagai accrual bulan berikutnya."
+            )
+        await status_msg.delete()
+        with open(output_path, "rb") as f:
+            await update.message.reply_document(
+                document=f, filename=final_filename, caption="\n".join(caption_lines)
+            )
+
+    context.user_data["kuartal_mode"] = False
+    context.user_data["kuartal_files"] = []
+    shutil.rmtree(user_dir, ignore_errors=True)
+
+
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler error global - PTB akan spam traceback mentah ke log kalau
+    tidak ada ini terdaftar. Conflict (dua instance bot rebutan getUpdates,
+    biasanya sisa deploy lama yang belum mati) ditangani beda dari error
+    lain: cukup dicatat singkat, PTB sendiri sudah auto-retry sampai
+    instance lama berhenti - tidak perlu tindakan lebih lanjut di sini.
+    Error lain dicatat lengkap supaya tetap bisa ditelusuri."""
+    err = context.error
+    if isinstance(err, Conflict):
+        logger.warning(
+            "409 Conflict: kemungkinan ada instance bot lain yang masih jalan "
+            "(sisa deploy lama). PTB akan retry otomatis sampai instance lama mati."
+        )
+        return
+    if isinstance(err, NetworkError):
+        logger.warning("Network error sementara, PTB akan retry otomatis: %s", err)
+        return
+    logger.error("Unhandled exception saat proses update", exc_info=err)
+
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("Env var BOT_TOKEN belum di-set")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("laporan", laporan_command))
+    app.add_handler(CommandHandler("kuartal", kuartal_command))
+    app.add_handler(CommandHandler("batal", batal_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_error_handler(error_handler)
     logger.info("Bot rekonsiliasi jalan...")
-    app.run_polling()
+    # drop_pending_updates: buang antrean update lama saat start - supaya
+    # kalau ada command yang "hilang" waktu jendela konflik 2 instance
+    # (mis. saat redeploy), instance baru tidak balas telat/dobel ke pesan
+    # basi, dan user tinggal kirim ulang command-nya
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
