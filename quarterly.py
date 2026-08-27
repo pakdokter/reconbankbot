@@ -420,7 +420,32 @@ def write_quarterly_balance_sheet(wb, months, income_ref):
         lambda cl: f"={cl}{balance_check_row}-{cl}{transfer_row}",
         bold=True,
     )
-    r += 3
+    r += 1
+    # Cek kontinuitas antar bulan: apakah Saldo Awal yang DIDEKLARASIKAN di
+    # file bulan ini sama dengan Saldo Akhir yang benar-benar DIHITUNG dari
+    # transaksi bulan sebelumnya? Kalau tidak, itu sumber selisih yang
+    # SUDAH ADA DI DATA SUMBER (mis. pembulatan bank antar bulan) - bukan
+    # bug perhitungan, dan tidak bisa diperbaiki dari sisi laporan ini.
+    continuity_row = r
+    continuity_gaps = [0.0]
+    for i in range(1, len(months)):
+        continuity_gaps.append(round(months[i]["total_saldo_awal"] - months[i - 1]["total_aset"], 2))
+    write_snapshot_data_row(
+        ws, r, "Cek Kontinuitas: Saldo Awal Bulan Ini - Saldo Akhir Bulan Lalu", labels,
+        lambda label: continuity_gaps[labels.index(label)],
+    )
+    r += 1
+    ws.cell(row=r, column=1,
+            value=("Kalau baris di atas tidak 0, itu artinya file bulan ini mendeklarasikan Saldo "
+                   "Awal yang beda dari hasil hitung transaksi bulan sebelumnya - selisih ini SUDAH "
+                   "ADA di data sumber (mis. pembulatan bank saat laporan berganti bulan), bukan "
+                   "kesalahan perhitungan laporan kuartalan ini. Kalau 'Selisih Belum Terjelaskan' di "
+                   "atas mendekati angka yang sama, itu kemungkinan besar penyebabnya."))
+    ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+    ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=rc.pivot_total_col(labels))
+    ws.row_dimensions[r].height = 48
+    r += 2
 
     # ------------------------------------------------------------------
     # RINGKASAN & PROGRES BULANAN - sengaja dipisah dari bagian Ekuitas di
