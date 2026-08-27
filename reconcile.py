@@ -299,7 +299,12 @@ def find_matches(all_txns, sheet_names):
     dengan toleransi selisih nominal untuk biaya admin/pembulatan.
     Tidak pernah menyimpulkan 'tidak ditemukan' tanpa mencoba seluruh
     kandidat di rekening tujuan terlebih dahulu."""
-    transfers = [t for t in all_txns if t.is_transfer]
+    # nominal 0 dikecualikan dari pencocokan: baris seperti ini biasanya
+    # penanda/referensi dari parser sumber (mis. "Bagian dari transaksi
+    # Fliptech: ...") bukan perpindahan uang sungguhan - tidak ada nominal
+    # untuk dicocokkan, jadi kalau ikut diproses selalu nyangkut sebagai
+    # "Needs manual verification" tanpa nilai informasi apapun
+    transfers = [t for t in all_txns if t.is_transfer and t.nominal != 0]
     matched_dst_ids = set()
     consumed_ids = set()  # baik src maupun dst yang sudah punya pasangan
     results = []
@@ -323,6 +328,7 @@ def find_matches(all_txns, sheet_names):
             for t in all_txns
             if t is not src
             and t.is_transfer
+            and t.nominal != 0
             and id(t) not in consumed_ids
             and (counterpart_hint is None or t.sheet == counterpart_hint)
             and (
@@ -340,6 +346,7 @@ def find_matches(all_txns, sheet_names):
                 for t in all_txns
                 if t is not src
                 and t.is_transfer
+                and t.nominal != 0
                 and id(t) not in consumed_ids
                 and t.sheet != src.sheet
                 and (t.nominal > 0) != (src.nominal > 0)
