@@ -134,20 +134,6 @@ def sumif_multi_across_sheets(sheets_info, categories):
     return "=" + "+".join(parts) if parts else "=0"
 
 
-def sumifs_employee_across_sheets(sheets_info, employee_name):
-    """Pakai wildcard *nama* (bukan exact match) supaya toleran terhadap
-    spasi berlebih di depan/belakang teks Objek antar bulan (SUMIFS exact
-    match akan menganggap 'Nama' dan ' Nama' dua kriteria berbeda)."""
-    name = employee_name.strip()
-    parts = [
-        (f"SUMIFS('{sheet}'!$J$2:$J${last_row},"
-         f"'{sheet}'!$C$2:$C${last_row},\"Gaji*\","
-         f"'{sheet}'!$H$2:$H${last_row},\"*{name}*\")")
-        for sheet, last_row in sheets_info
-    ]
-    return "=" + "+".join(parts) if parts else "=0"
-
-
 # ---------------------------------------------------------------------------
 # Laba Rugi Kuartal (kolom = 3 bulan + TOTAL)
 # ---------------------------------------------------------------------------
@@ -199,9 +185,17 @@ def write_quarterly_income_statement(wb, month_sheet_map):
     )
     exp_rows.append(r)
     r += 1
+    all_sheets_quarter = _all_sheets(month_sheet_map)
+    nama_bulan_list = [_nama_bulan_short(lb) for lb in labels]
     rc.write_pivot_data_row(
         ws, r, "Gaji Pegawai (rincian per orang: sheet Roster Gaji)", labels,
-        lambda label: sumif_across_sheets(_sheets_for_label(month_sheet_map, label), "Gaji*"),
+        lambda label: sumif_gaji_bulan_kuartal(all_sheets_quarter, _nama_bulan_short(label)),
+    )
+    exp_rows.append(r)
+    r += 1
+    rc.write_pivot_data_row(
+        ws, r, "Gaji Lainnya (accrual luar kuartal - ditotal di kolom bulan pertama)", labels,
+        lambda label: "=0" if label != labels[0] else sumif_gaji_lainnya_kuartal(all_sheets_quarter, nama_bulan_list),
     )
     exp_rows.append(r)
     r += 1
@@ -261,6 +255,67 @@ def _opening_for_label(month_sheet_map, label):
         if m["label"] == label:
             return m["opening"]
     return []
+
+
+def _all_sheets(month_sheet_map):
+    """Semua sheet rekening dari SELURUH kuartal digabung jadi satu list -
+    dipakai buat baris Gaji, karena gaji untuk bulan X bisa saja BARU
+    tercatat/dibayar di sheet bulan Y (telat bayar). Supaya "Gaji Eva
+    Januari 2023" tetap masuk kolom Januari meskipun transaksinya baru
+    muncul di sheet Februari, pencarian kategori+bulan harus lintas semua
+    sheet kuartal, bukan cuma sheet bulan itu sendiri."""
+    sheets = []
+    for m in month_sheet_map:
+        sheets.extend(m["sheets"])
+    return sheets
+
+
+def _nama_bulan_short(label):
+    """'Januari 2025' -> 'Januari' (nama bulan tanpa tahun, dipakai buat
+    wildcard pencarian di Keterangan - contoh nyata di data ('Gaji
+    Latifatul Husna Januari') kadang tidak menyertakan tahun sama sekali)."""
+    return label.rsplit(" ", 1)[0]
+
+
+def sumif_gaji_bulan_kuartal(all_sheets, nama_bulan):
+    """SUMIFS lintas SEMUA sheet kuartal: kategori 'Gaji*' DAN keterangan
+    menyebut nama_bulan - menangkap gaji untuk bulan itu di manapun dia
+    tercatat (termasuk kalau baru dibayar/tercatat di bulan berikutnya)."""
+    parts = [
+        (f"SUMIFS('{sheet}'!$J$2:$J${last_row},"
+         f"'{sheet}'!$C$2:$C${last_row},\"Gaji*\","
+         f"'{sheet}'!$B$2:$B${last_row},\"*{nama_bulan}*\")")
+        for sheet, last_row in all_sheets
+    ]
+    return "=" + "+".join(parts) if parts else "=0"
+
+
+def sumif_gaji_lainnya_kuartal(all_sheets, nama_bulan_list):
+    """Jaring pengaman: total semua baris 'Gaji*' di seluruh kuartal DIKURANGI
+    yang sudah tertangkap oleh 3 kolom bulan di atas - supaya gaji yang
+    keterangannya menyebut bulan DI LUAR kuartal (mis. accrual dari sebelum
+    kuartal ini mulai) tidak diam-diam hilang dari Laba Rugi Kuartal."""
+    parts = ["+".join(
+        f"SUMIF('{sheet}'!$C$2:$C${last_row},\"Gaji*\",'{sheet}'!$J$2:$J${last_row})"
+        for sheet, last_row in all_sheets
+    ) or "0"]
+    for nama_bulan in nama_bulan_list:
+        parts.append(sumif_gaji_bulan_kuartal(all_sheets, nama_bulan)[1:])
+    return "=" + parts[0] + "".join(f"-({p})" for p in parts[1:])
+
+
+def sumifs_employee_bulan_kuartal(all_sheets, employee_name, nama_bulan):
+    """Sama seperti sumif_gaji_bulan_kuartal tapi ditambah filter nama
+    pegawai (kolom Objek) - dipakai per sel di Roster Gaji."""
+    name = employee_name.strip()
+    parts = [
+        (f"SUMIFS('{sheet}'!$J$2:$J${last_row},"
+         f"'{sheet}'!$C$2:$C${last_row},\"Gaji*\","
+         f"'{sheet}'!$H$2:$H${last_row},\"*{name}*\","
+         f"'{sheet}'!$B$2:$B${last_row},\"*{nama_bulan}*\")")
+        for sheet, last_row in all_sheets
+    ]
+    return "=" + "+".join(parts) if parts else "=0"
 
 
 # ---------------------------------------------------------------------------
@@ -566,30 +621,50 @@ def write_roster_gaji(wb, month_sheet_map):
     labels = [m["label"] for m in month_sheet_map]
     ws["A1"] = f"ROSTER GAJI PEGAWAI - {labels[0].upper()} S.D. {labels[-1].upper()}"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = ("Rumus SUMIFS per pegawai (kolom Objek di sheet rekening) x per bulan. Kalau kolom "
-                f"bulan terakhir ({labels[-1]}) kosong padahal pegawainya muncul di bulan lain, "
-                "kemungkinan gajinya belum dibayar bulan itu - lihat kolom Catatan.")
+    ws["A2"] = ("Rumus SUMIFS: kategori Gaji* + Keterangan menyebut nama bulan kolom itu, dicari "
+                "LINTAS SEMUA sheet kuartal (bukan cuma sheet bulan itu) - supaya gaji yang telat "
+                f"dibayar/dicatat tetap masuk kolom bulan yang benar. Kalau kolom {labels[-1]} kosong "
+                "padahal pegawainya muncul di bulan lain, kemungkinan gajinya belum dibayar - lihat kolom Catatan.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     # kumpulkan semua nama pegawai unik dari kolom Objek pada baris berkategori
-    # Gaji* - dinormalisasi (spasi dirapikan + case-insensitive) supaya "Nama"
-    # dan " nama " dari bulan berbeda tidak dianggap 2 pegawai berbeda
+    # Gaji* - DIKELOMPOKKAN BERDASARKAN BULAN YANG DISEBUT DI KETERANGAN
+    # (mis. "Gaji Eva Januari 2023" -> bulan Januari), BUKAN berdasarkan di
+    # sheet bulan mana transaksinya fisik tercatat. Gaji sering dibayar
+    # telat (gaji Januari baru dibayar/tercatat Februari), jadi kalau
+    # dikelompokkan per sheet, itu akan salah masuk kolom Februari padahal
+    # seharusnya kolom Januari. Nama pegawai dinormalisasi (spasi dirapikan
+    # + case-insensitive) supaya "Nama" dan " nama " tidak dianggap 2 orang.
     def _norm_name(name):
         return " ".join(name.split()).casefold()
 
-    employees_by_month = []  # list of set(kunci-normalisasi) per bulan
-    canonical_name = {}  # kunci-normalisasi -> nama tampil (ejaan pertama kali muncul)
+    nama_bulan_list = [_nama_bulan_short(lb) for lb in labels]
+
+    def _parse_bulan_dari_keterangan(ket):
+        ket_lower = (ket or "").lower()
+        for nama in nama_bulan_list:
+            if nama.lower() in ket_lower:
+                return nama
+        return None
+
+    employees_by_month = [set() for _ in labels]  # index selaras dengan labels
+    canonical_name = {}
     all_employee_keys = []
+    n_gaji_luar_kuartal = 0
     for m in month_sheet_map:
-        month_emp = set()
         for sname, txns in m["txns_by_sheet"].items():
             for t in txns:
                 if (t.kategori or "").lower().startswith("gaji") and t.objek:
+                    bulan_untuk = _parse_bulan_dari_keterangan(t.desc)
+                    if bulan_untuk is None:
+                        n_gaji_luar_kuartal += 1
+                        continue  # gaji untuk bulan di luar kuartal ini, lihat baris "Gaji Lainnya" di Laba Rugi Kuartal
+                    idx = nama_bulan_list.index(bulan_untuk)
                     key = _norm_name(t.objek)
-                    month_emp.add(key)
+                    employees_by_month[idx].add(key)
                     canonical_name.setdefault(key, " ".join(t.objek.split()))
-        employees_by_month.append(month_emp)
-        for key in sorted(month_emp):
+    for idx in range(len(labels)):
+        for key in sorted(employees_by_month[idx]):
             if key not in all_employee_keys:
                 all_employee_keys.append(key)
     all_employees = [canonical_name[k] for k in all_employee_keys]
@@ -601,20 +676,21 @@ def write_roster_gaji(wb, month_sheet_map):
     ws.cell(row=r, column=rc.pivot_total_col(labels) + 1).font = rc.HEADER_FONT
     r += 1
 
+    all_sheets_quarter = _all_sheets(month_sheet_map)
     n_belum_dibayar_bulan_terakhir = 0
     last_label = labels[-1]
     for key, emp in zip(all_employee_keys, all_employees):
         rc.write_pivot_data_row(
             ws, r, emp, labels,
-            lambda label, emp=emp: sumifs_employee_across_sheets(_sheets_for_label(month_sheet_map, label), emp),
+            lambda label, emp=emp: sumifs_employee_bulan_kuartal(all_sheets_quarter, emp, _nama_bulan_short(label)),
         )
-        # cek python-side (bukan formula) apakah pegawai ini dapat gaji di
-        # bulan terakhir - kalau tidak, tapi muncul di bulan lain, kasih catatan
+        # cek python-side (bukan formula) apakah pegawai ini dapat gaji untuk
+        # bulan terakhir kuartal - kalau tidak, tapi muncul di bulan lain, kasih catatan
         paid_last_month = key in employees_by_month[-1]
         if not paid_last_month:
             n_belum_dibayar_bulan_terakhir += 1
             ws.cell(row=r, column=rc.pivot_total_col(labels) + 1,
-                    value=(f"Belum ada pembayaran gaji {last_label} tercatat - kemungkinan "
+                    value=(f"Belum ada gaji untuk {last_label} tercatat - kemungkinan "
                            f"dibebankan sebagai accrual di bulan setelah kuartal ini."))
             ws.cell(row=r, column=rc.pivot_total_col(labels) + 1).font = Font(italic=True, color="B45309")
             ws.cell(row=r, column=rc.pivot_total_col(labels) + 1).alignment = Alignment(wrap_text=True)
@@ -626,8 +702,20 @@ def write_roster_gaji(wb, month_sheet_map):
         last_data_row_ = r - 1
         rc.write_pivot_subtotal_row(ws, r, "TOTAL", labels, [first_data_row, last_data_row_])
     else:
-        ws.cell(row=r, column=1, value="(tidak ada transaksi berkategori Gaji di 3 bulan ini)")
+        ws.cell(row=r, column=1, value="(tidak ada transaksi berkategori Gaji untuk bulan-bulan di kuartal ini)")
         ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+    r += 1
+    if n_gaji_luar_kuartal:
+        ws.cell(row=r, column=1,
+                value=(f"Catatan: {n_gaji_luar_kuartal} baris transaksi berkategori Gaji* keterangannya "
+                       "tidak menyebut salah satu dari 3 bulan kuartal ini (kemungkinan accrual dari "
+                       "bulan sebelum kuartal dimulai) - totalnya tetap dihitung di Laba Rugi Kuartal "
+                       "baris 'Gaji Lainnya', tapi tidak muncul di matriks roster ini karena tidak "
+                       "jelas masuk kolom bulan yang mana."))
+        ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=rc.pivot_total_col(labels) + 1)
+        ws.row_dimensions[r].height = 40
 
     ws.column_dimensions["A"].width = 28
     for i in range(len(labels)):
