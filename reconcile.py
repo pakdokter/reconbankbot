@@ -52,6 +52,7 @@ TRANSFER_KEYWORDS = [
     "pindang rekening internal",
     "transfer internal",
     "transfer lainnya",
+    "transaksi internal",
 ]
 
 # Kata kunci di KETERANGAN (bukan kategori) yang juga menandakan transfer
@@ -1054,6 +1055,7 @@ TRANSFER_CATEGORY_TEXTS = [
     "Pindang Rekening Internal",
     "Transfer Internal",
     "Transfer Lainnya",
+    "Transaksi Internal",
 ]
 
 
