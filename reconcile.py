@@ -688,21 +688,34 @@ def add_helper_column(ws, last_row):
 # ---------------------------------------------------------------------------
 
 INCOME_CATEGORIES_REVENUE = ["Penjualan"]
+
+# Kategori beban yang dicocokkan persis apa adanya (SUMIF biasa)
 INCOME_CATEGORIES_EXPENSE = [
     "Belanja Bahan",
     "Belanja Operasional",
     "Belanja Konsumsi",
     "Marketing",
     "Reparasi",
+]
+
+# Gaji: dulu satu baris per "Gaji <Bulan> <Tahun>" (mis. "Gaji Desember 2024")
+# yang berarti daftar kategori harus terus ditambah tiap tahun. Sekarang
+# pakai kategori umum yang durabel + wildcard "Gaji*" sebagai jaring pengaman
+# supaya label lama/berbeda (termasuk yang sudah ada di data historis) tetap
+# ketangkep tanpa perlu didaftar satu-satu di kode.
+GAJI_GENERIC_CATEGORIES = ["Gaji Bulan Ini", "Gaji Accrual"]
+
+# Biaya admin, biaya admin transfer (Fliptech, auto dari Rekonsiliasi), bunga,
+# dan pajak bank digabung jadi SATU baris "Biaya Admin & Bunga Bank" - dulu
+# terpecah karena bank berbeda pakai istilah berbeda (Biaya Admin & Pajak
+# Bank / Biaya Admin dan Bunga Bank / Bunga dan Admin Bank), padahal secara
+# ekonomi sama-sama biaya jasa perbankan.
+BANK_FEE_CATEGORY_TEXTS = [
     "Biaya Admin & Pajak Bank",
     "Biaya Admin dan Bunga Bank",
     "Bunga dan Admin Bank",
-    "Gaji Desember 2024",
-    "Gaji Desember 2025",
-    "Gaji Desember 2026",
-    "Gaji Desember 2027",
-    "Gaji Desember 2028",
 ]
+
 OTHER_CATEGORIES = ["Tip/Minus/Lebih"]
 
 
@@ -806,6 +819,20 @@ def sumif_one_sheet(sheet, last_row, category):
             f"'{sheet}'!$J$2:$J${last_row})")
 
 
+def sumif_gaji_lainnya_formula(sheet, last_row):
+    """Jaring pengaman: tangkap semua kategori yang diawali 'Gaji' TAPI bukan
+    salah satu label generik yang sudah dihitung terpisah (mis. label lama
+    'Gaji Desember 2024' dkk, atau label baru yang belum masuk daftar) -
+    supaya tidak ada beban gaji yang diam-diam hilang dari Laba Rugi hanya
+    karena istilah kategorinya beda dari yang diharapkan."""
+    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_j = f"'{sheet}'!$J$2:$J${last_row}"
+    parts = [f"SUMIF({rng_c},\"Gaji*\",{rng_j})"]
+    for cat in GAJI_GENERIC_CATEGORIES:
+        parts.append(f"SUMIF({rng_c},\"{cat}\",{rng_j})")
+    return "=" + parts[0] + "".join(f"-{p}" for p in parts[1:])
+
+
 def write_income_statement(wb, sheets_last_row, period_label, recon_range):
     name = "Laporan Laba Rugi"
     if name in wb.sheetnames:
@@ -842,14 +869,30 @@ def write_income_statement(wb, sheets_last_row, period_label, recon_range):
                               lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
-    # Biaya admin transfer (mis. via Fliptech) yang terdeteksi otomatis di
-    # Rekonsiliasi (kolom N/O) - dibukukan sebagai beban riil di sini, bukan
-    # dibiarkan hilang jadi selisih Neraca yang butuh koreksi manual tiap bulan
+    # Gaji: kategori generik yang durabel (tidak perlu ditambah tiap tahun),
+    # plus baris "Gaji Lainnya" sebagai jaring pengaman untuk label historis
+    # (mis. "Gaji Desember 2024") atau label lain yang belum terdaftar
+    for cat in GAJI_GENERIC_CATEGORIES:
+        write_pivot_data_row(ws, r, cat, sheets,
+                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
+        exp_rows.append(r)
+        r += 1
+    write_pivot_data_row(
+        ws, r, "Gaji Lainnya (kategori historis/lain, tertangkap wildcard)", sheets,
+        lambda sheet: sumif_gaji_lainnya_formula(sheet, sheets_last_row[sheet]),
+    )
+    exp_rows.append(r)
+    r += 1
+    # Biaya Admin & Bunga Bank: gabungan biaya admin bank, biaya admin
+    # transfer (mis. via Fliptech, auto-terdeteksi dari Rekonsiliasi kolom
+    # N/O), bunga, dan pajak bank - dulu terpecah jadi beberapa baris karena
+    # tiap bank pakai istilah beda, sekarang satu baris saja
     fee_row = r
     write_pivot_data_row(
-        ws, r, "Biaya Admin Transfer (auto-terdeteksi dari Rekonsiliasi)", sheets,
+        ws, r, "Biaya Admin & Bunga Bank (termasuk biaya transfer Fliptech)", sheets,
         lambda sheet: (
-            f"=-SUMIFS('Rekonsiliasi'!$O${recon_range['data_start']}:$O${recon_range['data_end']},"
+            f"={sumif_multi_one_sheet(sheet, sheets_last_row[sheet], BANK_FEE_CATEGORY_TEXTS)[1:]}"
+            f"-SUMIFS('Rekonsiliasi'!$O${recon_range['data_start']}:$O${recon_range['data_end']},"
             f"'Rekonsiliasi'!$N${recon_range['data_start']}:$N${recon_range['data_end']},\"{sheet}\")"
         ),
     )
