@@ -146,6 +146,13 @@ def sum_category_prefix(txns, prefix):
     return round(sum(t.nominal for t in txns if (t.kategori or "").lower().startswith(p)), 2)
 
 
+def sum_modal(txns):
+    """Modal & Setoran Pemilik + 'Transfer Masuk ... dari rekening sendiri'
+    (uang milik owner sendiri dipindah antar rekening) - konsisten dengan
+    Txn.is_capital di reconcile.py."""
+    return round(sum(t.nominal for t in txns if t.is_capital), 2)
+
+
 def _txns_for_label(months, label):
     for m in months:
         if m["label"] == label:
@@ -374,7 +381,7 @@ def write_quarterly_balance_sheet(wb, months, income_ref, period_word="Kuartal")
     )
     r += 1
     modal_row = r
-    modal_per_month = [sum_category(m["all_txns"], "Modal & Setoran Pemilik") for m in months]
+    modal_per_month = [sum_modal(m["all_txns"]) for m in months]
     modal_kumulatif = []
     running = 0.0
     for v in modal_per_month:
@@ -558,7 +565,7 @@ def write_quarterly_cash_flow(wb, months, income_ref, balance_ref, period_word="
     fin_row = r
     rc.write_pivot_data_row(
         ws, r, "Modal & Setoran Pemilik", labels,
-        lambda label: sum_category(_txns_for_label(months, label), "Modal & Setoran Pemilik"),
+        lambda label: sum_modal(_txns_for_label(months, label)),
     )
     r += 1
     total_fin_row = r
