@@ -75,6 +75,15 @@ CAPITAL_KEYWORDS = [
     "modal dan setoran pemilik",
 ]
 
+# "Transfer Masuk" sendirian terlalu umum untuk langsung dianggap Modal
+# (transfer masuk dari pelanggan/pihak luar seharusnya Penjualan, bukan
+# Modal) - jadi HANYA dianggap setara Modal & Setoran Pemilik kalau
+# keterangannya eksplisit bilang "dari rekening sendiri" (uang milik
+# owner sendiri yang dipindah antar rekening, mis. pencairan investasi
+# pribadi yang disetor ke rekening bisnis), sesuai kasus nyata yang
+# ditemukan: "BI-Fast Transfer Masuk ... (dari rekening sendiri)".
+CAPITAL_SELF_TRANSFER_KEYWORDS = ["dari rekening sendiri", "rekening sendiri"]
+
 # Kategori saldo awal -> dipakai untuk saldo awal Neraca, dilewati saat
 # menjumlah transaksi berjalan.
 OPENING_KEYWORDS = ["saldo awal"]
@@ -129,7 +138,13 @@ class Txn:
     @property
     def is_capital(self):
         k = (self.kategori or "").lower()
-        return any(kw in k for kw in CAPITAL_KEYWORDS)
+        if any(kw in k for kw in CAPITAL_KEYWORDS):
+            return True
+        if "transfer masuk" in k:
+            combined = f"{self.desc or ''} {self.ket or ''}".lower()
+            if any(kw in combined for kw in CAPITAL_SELF_TRANSFER_KEYWORDS):
+                return True
+        return False
 
     @property
     def is_opening(self):
@@ -915,6 +930,17 @@ def sumif_one_sheet(sheet, last_row, category):
             f"'{sheet}'!$J$2:$J${last_row})")
 
 
+def sumif_modal_one_sheet(sheet, last_row):
+    """Modal & Setoran Pemilik + kasus 'Transfer Masuk ... dari rekening
+    sendiri' (uang milik owner sendiri dipindah antar rekening, mis.
+    pencairan investasi pribadi) - lihat catatan di CAPITAL_SELF_TRANSFER_KEYWORDS."""
+    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_b = f"'{sheet}'!$B$2:$B${last_row}"
+    rng_j = f"'{sheet}'!$J$2:$J${last_row}"
+    return (f"=SUMIF({rng_c},\"Modal & Setoran Pemilik\",{rng_j})"
+            f"+SUMIFS({rng_j},{rng_c},\"Transfer Masuk\",{rng_b},\"*rekening sendiri*\")")
+
+
 def sumif_gaji_lainnya_formula(sheet, last_row, nama_bulan_list):
     """Jaring pengaman: tangkap semua baris berkategori 'Gaji*' TAPI
     keterangannya tidak menyebut bulan ini/lalu (mis. gaji utuh dari bulan
@@ -1096,7 +1122,7 @@ def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_en
     r += 1
     modal_row = r
     write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (bulan ini)", sheets,
-                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Modal & Setoran Pemilik"))
+                          lambda sheet: sumif_modal_one_sheet(sheet, sheets_last_row[sheet]))
     r += 1
     laba_row = r
     # kolom rekening di Neraca urutannya sama dengan di Laporan Laba Rugi
@@ -1197,7 +1223,7 @@ def write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label):
     r += 1
     fin_row = r
     write_pivot_data_row(ws, r, "Modal & Setoran Pemilik", sheets,
-                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Modal & Setoran Pemilik"))
+                          lambda sheet: sumif_modal_one_sheet(sheet, sheets_last_row[sheet]))
     r += 1
     total_fin_row = r
     write_pivot_subtotal_row(ws, r, "Kas Bersih dari Pendanaan", sheets, [fin_row, fin_row])
