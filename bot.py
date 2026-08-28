@@ -14,10 +14,11 @@ hanya keluar kalau ditrigger:
 2. Kirim file dulu (dapat hasil recon-only), lalu kirim /laporan untuk
    generate ulang file yang sama + 3 sheet laporan keuangan.
 
-Fungsi TAMBAHAN: laporan keuangan KUARTALAN. Trigger /kuartal dulu, baru
-upload 3 file hasil rekonsiliasi bulanan yang SUDAH completed (bulan harus
-berurutan). Outputnya cuma Laba Rugi/Neraca/Arus Kas + Roster Gaji 3 bulan
-(bukan rekonsiliasi baru - itu sudah beres di masing-masing file bulanan).
+Fungsi TAMBAHAN: laporan keuangan KUARTALAN dan TAHUNAN. Trigger /kuartal
+(3 file) atau /tahunan (12 file) dulu, baru upload file-file hasil
+rekonsiliasi bulanan yang SUDAH completed (bulan harus berurutan).
+Outputnya laporan ringkasan/kesimpulan (bukan rekonsiliasi baru - itu
+sudah beres di masing-masing file bulanan).
 
 Environment variable yang dibutuhkan:
 - BOT_TOKEN : token bot dari BotFather
@@ -36,6 +37,7 @@ from telegram.error import Conflict, NetworkError
 
 from reconcile import run_reconciliation
 from quarterly import run_quarterly_report, QuarterlyInputError
+from annual import run_annual_report, AnnualInputError
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -51,9 +53,30 @@ CACHE_DIR = os.path.join(tempfile.gettempdir(), "reconbot_cache")
 CACHE_TTL = 6 * 3600  # 6 jam
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# staging file buat mode /kuartal (3 file per user, ditumpuk sampai lengkap)
-QUARTER_DIR = os.path.join(tempfile.gettempdir(), "reconbot_quarter")
-os.makedirs(QUARTER_DIR, exist_ok=True)
+# staging file buat mode /kuartal & /tahunan (N file per user, ditumpuk
+# sampai lengkap). Satu direktori generik dipakai untuk kedua mode,
+# dipisah per-user sekaligus per-mode di path-nya.
+MULTI_DIR = os.path.join(tempfile.gettempdir(), "reconbot_multi")
+os.makedirs(MULTI_DIR, exist_ok=True)
+
+# konfigurasi tiap mode multi-file: jumlah file yang dibutuhkan, fungsi
+# generator laporan, exception khusus mode itu, dan teks-teks tampilan
+MULTI_MODE_CONFIG = {
+    "kuartal": {
+        "n_files": 3,
+        "run_fn": run_quarterly_report,
+        "error_cls": QuarterlyInputError,
+        "label": "kuartalan",
+        "output_prefix": "Laporan Kuartalan",
+    },
+    "tahunan": {
+        "n_files": 12,
+        "run_fn": run_annual_report,
+        "error_cls": AnnualInputError,
+        "label": "tahunan",
+        "output_prefix": "Laporan Tahunan",
+    },
+}
 
 LAPORAN_TRIGGER_WORDS = ["laporan", "lengkap", "statement", "financial"]
 
@@ -69,7 +92,8 @@ WELCOME = (
     "Excel beralamat absolut), ada 2 cara:\n"
     "1. Tambahkan kata *laporan* di caption waktu upload file, atau\n"
     "2. Kirim /laporan setelah upload (pakai file yang sama, tanpa upload ulang)\n\n"
-    "Butuh laporan KUARTALAN (3 bulan sekaligus)? Kirim /kuartal."
+    "Butuh laporan KUARTALAN (3 bulan sekaligus)? Kirim /kuartal.\n"
+    "Butuh laporan TAHUNAN (12 bulan sekaligus)? Kirim /tahunan."
 )
 
 
@@ -85,8 +109,8 @@ def _cleanup_cache():
             os.remove(fpath)
 
 
-def _quarter_user_dir(user_id):
-    return os.path.join(QUARTER_DIR, str(user_id))
+def _multi_user_dir(user_id, mode):
+    return os.path.join(MULTI_DIR, mode, str(user_id))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -161,8 +185,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kirim file .xlsx ya, format lain belum didukung.")
         return
 
-    if context.user_data.get("kuartal_mode"):
-        await handle_quarterly_document(update, context, doc)
+    active_mode = context.user_data.get("multi_mode")
+    if active_mode:
+        await handle_multi_document(update, context, doc, active_mode)
         return
 
     _cleanup_cache()
@@ -190,42 +215,60 @@ async def laporan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Mode /kuartal: trigger dulu, baru upload 3 file bulanan yang sudah
-# completed (bulan harus berurutan)
+# Mode multi-file (/kuartal, /tahunan): trigger dulu, baru upload N file
+# bulanan yang sudah completed (bulan harus berurutan)
 # ---------------------------------------------------------------------------
 
-async def kuartal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _start_multi_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    cfg = MULTI_MODE_CONFIG[mode]
     user_id = update.effective_user.id
-    user_dir = _quarter_user_dir(user_id)
+    user_dir = _multi_user_dir(user_id, mode)
     shutil.rmtree(user_dir, ignore_errors=True)
     os.makedirs(user_dir, exist_ok=True)
-    context.user_data["kuartal_mode"] = True
-    context.user_data["kuartal_files"] = []
+    context.user_data["multi_mode"] = mode
+    context.user_data["multi_files"] = []
     await update.message.reply_text(
-        "Mode laporan kuartalan aktif. Upload 3 file hasil rekonsiliasi bulanan yang "
-        "sudah *completed* (bulan harus berurutan, urutan upload bebas - nanti "
+        f"Mode laporan {cfg['label']} aktif. Upload {cfg['n_files']} file hasil rekonsiliasi "
+        "bulanan yang sudah *completed* (bulan harus berurutan, urutan upload bebas - nanti "
         "diurutkan otomatis).\n\n"
         "Kirim /batal kalau mau keluar dari mode ini.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
+async def kuartal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _start_multi_mode(update, context, "kuartal")
+
+
+async def tahunan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _start_multi_mode(update, context, "tahunan")
+
+
 async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("kuartal_mode"):
+    mode = context.user_data.get("multi_mode")
+    if not mode:
         await update.message.reply_text("Tidak ada proses yang bisa dibatalkan.")
         return
     user_id = update.effective_user.id
-    shutil.rmtree(_quarter_user_dir(user_id), ignore_errors=True)
-    context.user_data["kuartal_mode"] = False
-    context.user_data["kuartal_files"] = []
-    await update.message.reply_text("Mode laporan kuartalan dibatalkan.")
+    shutil.rmtree(_multi_user_dir(user_id, mode), ignore_errors=True)
+    context.user_data["multi_mode"] = None
+    context.user_data["multi_files"] = []
+    cfg = MULTI_MODE_CONFIG[mode]
+    await update.message.reply_text(f"Mode laporan {cfg['label']} dibatalkan.")
 
 
-async def handle_quarterly_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+def _reset_multi_mode(context):
+    context.user_data["multi_mode"] = None
+    context.user_data["multi_files"] = []
+
+
+async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc, mode):
+    cfg = MULTI_MODE_CONFIG[mode]
+    n_files = cfg["n_files"]
     user_id = update.effective_user.id
-    user_dir = _quarter_user_dir(user_id)
+    user_dir = _multi_user_dir(user_id, mode)
     os.makedirs(user_dir, exist_ok=True)
-    files = context.user_data.setdefault("kuartal_files", [])
+    files = context.user_data.setdefault("multi_files", [])
 
     idx = len(files) + 1
     dest_path = os.path.join(user_dir, f"bulan_{idx}.xlsx")
@@ -233,36 +276,34 @@ async def handle_quarterly_document(update: Update, context: ContextTypes.DEFAUL
     await tg_file.download_to_drive(dest_path)
     files.append(dest_path)
 
-    if len(files) < 3:
-        await update.message.reply_text(f"Diterima ({len(files)}/3). Upload {3 - len(files)} file lagi.")
+    if len(files) < n_files:
+        await update.message.reply_text(f"Diterima ({len(files)}/{n_files}). Upload {n_files - len(files)} file lagi.")
         return
 
-    status_msg = await update.message.reply_text("3 file diterima, memproses laporan kuartalan...")
+    status_msg = await update.message.reply_text(f"{n_files} file diterima, memproses laporan {cfg['label']}...")
     with tempfile.TemporaryDirectory() as tmp:
-        output_path = os.path.join(tmp, "kuartal.xlsx")
+        output_path = os.path.join(tmp, "laporan.xlsx")
         try:
-            summary = run_quarterly_report(files, output_path)
-        except QuarterlyInputError as e:
-            await status_msg.edit_text(f"Gagal: {e}\n\nKirim /kuartal lagi untuk coba ulang.")
-            context.user_data["kuartal_mode"] = False
-            context.user_data["kuartal_files"] = []
+            summary = cfg["run_fn"](files, output_path)
+        except cfg["error_cls"] as e:
+            await status_msg.edit_text(f"Gagal: {e}\n\nKirim /{mode} lagi untuk coba ulang.")
+            _reset_multi_mode(context)
             shutil.rmtree(user_dir, ignore_errors=True)
             return
         except Exception as e:
-            logger.exception("Gagal memproses laporan kuartalan")
+            logger.exception("Gagal memproses laporan %s", cfg["label"])
             await status_msg.edit_text(
-                f"Gagal memproses: {e}\n\nCek apakah ketiga file itu benar hasil rekonsiliasi "
-                "bulanan yang sudah completed. Kirim /kuartal lagi untuk coba ulang."
+                f"Gagal memproses: {e}\n\nCek apakah semua {n_files} file itu benar hasil rekonsiliasi "
+                f"bulanan yang sudah completed. Kirim /{mode} lagi untuk coba ulang."
             )
-            context.user_data["kuartal_mode"] = False
-            context.user_data["kuartal_files"] = []
+            _reset_multi_mode(context)
             shutil.rmtree(user_dir, ignore_errors=True)
             return
 
         periode = summary["periode"]
-        final_filename = f"Laporan Kuartalan - {periode[0]} s.d. {periode[-1]}.xlsx"
+        final_filename = f"{cfg['output_prefix']} - {periode[0]} s.d. {periode[-1]}.xlsx"
         caption_lines = [
-            f"Laporan kuartalan {periode[0]} - {periode[-1]} selesai.",
+            f"Laporan {cfg['label']} {periode[0]} - {periode[-1]} selesai.",
             "",
             f"Jumlah pegawai di roster gaji: {summary['n_pegawai']}",
         ]
@@ -278,8 +319,7 @@ async def handle_quarterly_document(update: Update, context: ContextTypes.DEFAUL
                 document=f, filename=final_filename, caption="\n".join(caption_lines)
             )
 
-    context.user_data["kuartal_mode"] = False
-    context.user_data["kuartal_files"] = []
+    _reset_multi_mode(context)
     shutil.rmtree(user_dir, ignore_errors=True)
 
 
@@ -310,6 +350,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("laporan", laporan_command))
     app.add_handler(CommandHandler("kuartal", kuartal_command))
+    app.add_handler(CommandHandler("tahunan", tahunan_command))
     app.add_handler(CommandHandler("batal", batal_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(error_handler)
