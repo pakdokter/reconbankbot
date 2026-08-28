@@ -144,15 +144,6 @@ class Txn:
 # Membaca sheet rekening
 # ---------------------------------------------------------------------------
 
-CLOSING_SUMMARY_KEYWORDS = [
-    "saldo akhir",
-    "total debit",
-    "total kredit",
-    "total mutasi debit",
-    "total mutasi kredit",
-]
-
-
 def is_closing_summary_row(tanggal, kategori, keterangan, is_first_row=False):
     """Deteksi baris rekap penutup (Saldo Awal/Saldo Akhir/Total Debit/Total
     Kredit) yang kadang ada di baris-baris akhir sheet rekening sebagai
@@ -161,22 +152,20 @@ def is_closing_summary_row(tanggal, kategori, keterangan, is_first_row=False):
     nominal transaksi tunggal) akan merusak saldo kumulatif dan jadi sumber
     selisih di Neraca.
 
-    Dua sinyal dipakai sekaligus:
-    1. Kata kunci eksplisit (saldo akhir/total debit/total kredit) - ini
-       jelas bukan transaksi apapun formatnya, di baris manapun.
-    2. Baris tanpa tanggal tapi ada teks kategori/keterangan - transaksi
-       biasa selalu bertanggal, jadi baris berlabel tanpa tanggal (mis.
-       'Saldo Awal' yang diulang di rekap penutup) juga dianggap bagian
-       dari blok rekap. TAPI sinyal ini TIDAK dipakai untuk baris data
-       PERTAMA (is_first_row=True) - baris Saldo Awal/Saldo Awal Bulan yang
-       legitimate di baris pertama kadang memang tidak diisi tanggal, dan
-       itu bukan blok penutup, itu deklarasi saldo awal yang sah."""
+    Syarat UTAMA: baris TIDAK punya tanggal (dan bukan baris data pertama -
+    baris Saldo Awal/Saldo Awal Bulan yang legitimate di baris pertama
+    kadang memang tidak diisi tanggal, itu bukan blok penutup). Transaksi
+    asli SELALU bertanggal, termasuk checkpoint tengah bulan seperti 'Saldo
+    akhir sesi' (checkpoint akhir shift kasir, muncul berkali-kali per
+    bulan, tapi tetap punya tanggal asli) - kalau syarat tanpa-tanggal ini
+    tidak dijadikan gerbang wajib untuk kata kunci juga, baris seperti itu
+    akan salah dikira blok penutup HANYA karena mengandung teks 'saldo
+    akhir', dan memotong rekonstruksi saldo jauh sebelum akhir bulan
+    sesungguhnya."""
+    if is_first_row or tanggal is not None:
+        return False
     text = f"{kategori or ''} {keterangan or ''}".strip().lower()
-    if any(kw in text for kw in CLOSING_SUMMARY_KEYWORDS):
-        return True
-    if not is_first_row and tanggal is None and text:
-        return True
-    return False
+    return bool(text)
 
 
 def read_account_sheet(ws):
@@ -823,7 +812,7 @@ BANK_FEE_CATEGORY_TEXTS = [
     "Bunga dan Admin Bank",
 ]
 
-OTHER_CATEGORIES = ["Tip/Minus/Lebih"]
+OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan"]
 
 
 # ---------------------------------------------------------------------------
