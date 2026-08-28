@@ -61,10 +61,20 @@ def compute_sheet_k(txns):
     dari penjumlahan beruntun banyak transaksi tidak menumpuk jadi selisih
     kecil (mis. Rp0,64) waktu dibandingkan dengan total yang dihitung lewat
     jalur penjumlahan lain (per kategori) - dua jalur sama-sama benar tapi
-    urutan penjumlahannya beda, jadi tanpa pembulatan bisa sedikit meleset."""
+    urutan penjumlahannya beda, jadi tanpa pembulatan bisa sedikit meleset.
+
+    PENTING: baris Saldo Awal yang di-inject bank-statement-bot kadang
+    kolom Saldo Kumulatifnya berisi RUMUS ('=E2', merujuk ke kolom Kredit
+    di baris yang sama), bukan angka literal. openpyxl tidak mengevaluasi
+    rumus (beda dengan reconcile.py yang semuanya rumus Excel, dihitung
+    Excel sendiri saat dibuka) - kalau dibaca apa adanya, nilainya None dan
+    opening jadi salah dianggap 0. Makanya kalau txns[0].saldo tidak bisa
+    dibaca sebagai angka, fallback ke nominal baris itu sendiri (Debit/
+    Kredit) - untuk baris Saldo Awal ini persis sama nilainya dengan yang
+    seharusnya dihasilkan rumus '=E2' tadi."""
     if not txns:
         return 0.0, 0.0
-    opening = txns[0].saldo if txns[0].saldo is not None else 0.0
+    opening = txns[0].saldo if txns[0].saldo is not None else txns[0].nominal
     running = opening
     for t in txns[1:]:
         running += t.nominal
