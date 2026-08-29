@@ -98,6 +98,14 @@ UTILITY_EXPENSE_KEYWORDS = ["listrik"]
 # kontak untuk toko Anugerah Plastik (pembelian plastik/kemasan).
 VENDOR_EXPENSE_KEYWORDS = ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"]
 
+# Semua varian kata untuk selisih kas kasir (kurang/lebih) dan tip
+# pelanggan - user menegaskan semua ini sama artinya dan harus selalu
+# dianggap kategori "Tip/Minus/Lebih", brapapun tulisan persisnya di
+# Kategori/Keterangan (mis. Kategori cuma "Minus", Keterangan "Minus
+# Kasir", "Uang Lebih", "Uang Cust", dst - bukan cuma yang persis
+# tertulis "Tip/Minus/Lebih").
+TIP_MINUS_KEYWORDS = ["minus", "lebih", "cust", "tip"]
+
 # Kategori saldo awal -> dipakai untuk saldo awal Neraca, dilewati saat
 # menjumlah transaksi berjalan.
 OPENING_KEYWORDS = ["saldo awal"]
@@ -153,6 +161,15 @@ class Txn:
             return False
         d = (self.desc or "").lower()
         return any(kw in d for kw in DESC_TRANSFER_KEYWORDS)
+
+    @property
+    def is_tip_minus_variant(self):
+        """True kalau Kategori ATAU Keterangan menyebut salah satu varian
+        kata untuk selisih kas kasir/tip (minus, lebih, uang cust, tip/
+        tips, dst - lihat TIP_MINUS_KEYWORDS) - semua dianggap kategori
+        yang sama: Tip/Minus/Lebih, apapun ejaan persisnya."""
+        text = f"{self.kategori or ''} {self.desc or ''}".lower()
+        return any(kw in text for kw in TIP_MINUS_KEYWORDS)
 
     @property
     def is_operational_override(self):
@@ -609,9 +626,10 @@ def find_minus_flags(all_txns_by_sheet):
     for sheet, txns in all_txns_by_sheet.items():
         for t in txns:
             reasons = []
-            if "tip/minus/lebih" in (t.kategori or "").lower() and abs(t.nominal) > TIP_MINUS_THRESHOLD:
+            if t.is_tip_minus_variant and abs(t.nominal) > TIP_MINUS_THRESHOLD:
                 reasons.append(
-                    f"Kategori Tip/Minus/Lebih dengan nominal Rp{abs(t.nominal):,.0f} "
+                    f"Kategori/keterangan menyebut varian Tip/Minus/Lebih (mis. minus/lebih/tip/"
+                    f"uang cust) dengan nominal Rp{abs(t.nominal):,.0f} "
                     f"(di atas ambang wajar Rp{TIP_MINUS_THRESHOLD:,.0f})."
                     .replace(",", ".")
                 )
@@ -1042,6 +1060,22 @@ def sumif_modal_one_sheet(sheet, last_row):
             f"+SUMIFS({rng_j},{rng_c},\"Transfer Masuk\",{rng_b},\"*rekening sendiri*\")")
 
 
+def sumif_tip_minus_one_sheet(sheet, last_row):
+    """Tip/Minus/Lebih + semua varian kata (minus, lebih, uang cust, tip/
+    tips, dst - lihat TIP_MINUS_KEYWORDS), dicek di Kategori ATAU
+    Keterangan, apapun ejaan persisnya. Pakai SUMPRODUCT (bukan beberapa
+    SUMIFS ditambah) supaya baris yang kebetulan cocok lebih dari satu
+    kata kunci/kolom tetap cuma terhitung SEKALI, bukan dobel."""
+    rng_b = f"'{sheet}'!$B$2:$B${last_row}"
+    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_j = f"'{sheet}'!$J$2:$J${last_row}"
+    terms = []
+    for kw in TIP_MINUS_KEYWORDS:
+        terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_c}))")
+        terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_b}))")
+    return f"=SUMPRODUCT(({'+'.join(terms)}>0)*{rng_j})"
+
+
 def sumif_operasional_one_sheet(sheet, last_row):
     """Belanja Operasional + dua override yang keterangan tambahannya
     (kolom I) memastikan itu memang pembelian operasional walau
@@ -1165,8 +1199,12 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     r += 1
     other_rows = []
     for cat in OTHER_CATEGORIES:
-        write_pivot_data_row(ws, r, cat, sheets,
-                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
+        if cat == "Tip/Minus/Lebih":
+            write_pivot_data_row(ws, r, cat, sheets,
+                                  lambda sheet: sumif_tip_minus_one_sheet(sheet, sheets_last_row[sheet]))
+        else:
+            write_pivot_data_row(ws, r, cat, sheets,
+                                  lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         other_rows.append(r)
         r += 1
     total_other_row = r
