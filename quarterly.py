@@ -41,6 +41,7 @@ jangkauan file yang diupload.
 """
 
 import math
+import re
 import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -979,8 +980,35 @@ EMPLOYEE_ALIASES = {
     "eva": "Latifatul Husna",
     "panji anjanis pran": "Panji Anjanis Pran",
     "panji": "Panji Anjanis Pran",
+    "adinda nurusshafwa": "Adinda Nurusshafwa",
+    "dinda": "Adinda Nurusshafwa",
+    "ismayanti": "Ismayanti",
+    "maya": "Ismayanti",
 }
 _EMPLOYEE_ALIAS_KEYS_SORTED = sorted(EMPLOYEE_ALIASES.keys(), key=len, reverse=True)
+
+
+def _try_resolve_employee_alias(text, anywhere=False):
+    """Coba cocokkan teks ke salah satu EMPLOYEE_ALIASES - return nama
+    kanonik kalau ketemu, None kalau tidak ada yang cocok (beda dengan
+    resolve_employee_name yang selalu mengembalikan sesuatu, fallback ke
+    teks asli kalau tidak ketemu alias apapun).
+
+    Default (anywhere=False): cocok sebagai AWALAN teks (cocok untuk kolom
+    Objek, yang biasanya memang diawali nama orang, mis. 'Roziyan Hidayat
+    Mei (Sisanya Di Tunai)'). anywhere=True: cocok di MANA SAJA dalam teks
+    selama berbatas kata (cocok untuk kolom Keterangan/kalimat bebas, mis.
+    'Gaji Owner Bulan Januari 2024' - kata 'owner' ada di tengah, bukan
+    di awal)."""
+    norm = _norm_name(text or "")
+    if not norm:
+        return None
+    for key in _EMPLOYEE_ALIAS_KEYS_SORTED:
+        if norm == key or norm.startswith(key + " ") or norm.startswith(key + "("):
+            return EMPLOYEE_ALIASES[key]
+        if anywhere and re.search(r"\b" + re.escape(key) + r"\b", norm):
+            return EMPLOYEE_ALIASES[key]
+    return None
 
 
 def resolve_employee_name(raw_objek):
@@ -990,11 +1018,102 @@ def resolve_employee_name(raw_objek):
     (Sisanya Di Tunai)') tetap dikenali sebagai orang yang sama. Kalau tidak
     ada alias yang cocok, pakai teks aslinya (dirapikan spasinya) apa
     adanya."""
-    norm = _norm_name(raw_objek)
-    for key in _EMPLOYEE_ALIAS_KEYS_SORTED:
-        if norm == key or norm.startswith(key + " ") or norm.startswith(key + "("):
-            return EMPLOYEE_ALIASES[key]
-    return " ".join(raw_objek.split())
+    return _try_resolve_employee_alias(raw_objek) or " ".join(raw_objek.split())
+
+
+def resolve_employee_for_gaji(t):
+    """Tentukan nama pegawai untuk transaksi berkategori Gaji* - Objek
+    BIASANYA berisi nama penerima, TAPI kadang (terutama gaji owner yang
+    dibayar tunai lewat Kas-Buku) Objek malah berisi nama REKENING TUJUAN
+    SETOR (mis. 'BCA-887', 'BCA') bukan nama orang, sementara Keterangan
+    (mis. 'Gaji Owner Bulan Januari 2024') justru eksplisit menyebut
+    penerimanya di TENGAH kalimat. Coba Objek dulu (kasus normal, cocok
+    sebagai awalan); kalau tidak cocok alias manapun, coba Keterangan
+    sebagai fallback (cocok di mana saja dalam kalimat); kalau keduanya
+    tidak cocok alias apapun, pakai Objek apa adanya (dirapikan) -
+    dianggap pegawai baru yang belum terdaftar di EMPLOYEE_ALIASES."""
+    from_objek = _try_resolve_employee_alias(t.objek)
+    if from_objek:
+        return from_objek
+    from_desc = _try_resolve_employee_alias(t.desc, anywhere=True)
+    if from_desc:
+        return from_desc
+    return " ".join((t.objek or "").split())
+
+
+# Kategori "ambigu" yang kadang dipakai secara keliru untuk pembayaran
+# gaji sungguhan (mis. bonus/tambahan gaji ke banyak pegawai tanggal
+# sama & referensi sama, tapi tertulis "Belanja Operasional" di
+# sumbernya, bukan "Gaji Pegawai").
+_AMBIGUOUS_GAJI_CATEGORIES = {"belanja operasional", "transfer keluar"}
+
+
+def _find_batch_payroll_ids(all_txns):
+    """Cari transaksi berkategori AMBIGU (bukan 'Gaji*') yang sebenarnya
+    genuinely pembayaran gaji - dideteksi dari pola BATCH: beberapa
+    transaksi di TANGGAL SAMA + Keterangan Tambahan (referensi) SAMA,
+    masing-masing ke PEGAWAI BERBEDA yang sudah dikenal. "Sudah dikenal"
+    di sini BUKAN cuma yang terdaftar di EMPLOYEE_ALIASES (banyak pegawai
+    TIDAK perlu alias sama sekali karena Objek-nya sudah nama lengkap yang
+    benar apa adanya) - melainkan SIAPAPUN yang namanya SUDAH MUNCUL di
+    transaksi 'Gaji*' genuine di bulan manapun dalam data ini. Pola batch
+    (tanggal+referensi sama, ke banyak pegawai berbeda) jauh lebih aman
+    daripada sekadar "kategori ambigu + Objek kebetulan cocok satu nama
+    pegawai" (gampang salah tangkap transaksi lain, mis. refund/
+    reimbursement biasa ke satu pegawai). Return set of id(txn) yang
+    dikonfirmasi bagian dari batch payroll."""
+    known_employees = set()
+    for t in all_txns:
+        if (t.kategori or "").strip().lower().startswith("gaji") and t.objek:
+            known_employees.add(_norm_name(resolve_employee_for_gaji(t)))
+
+    groups = {}
+    for t in all_txns:
+        k = (t.kategori or "").strip().lower()
+        if k not in _AMBIGUOUS_GAJI_CATEGORIES or not t.objek:
+            continue
+        ket_text = (t.ket or "").strip()
+        # syaratkan ket menyerupai KODE REFERENSI transfer bank (ada "/"),
+        # bukan label deskriptif generik yang gampang kebetulan sama
+        # persis untuk lebih dari satu orang (mis. "Ganti belanja" dipakai
+        # berulang untuk reimbursement macam-macam, bukan payroll batch
+        # sungguhan) - kode referensi transfer selalu berbentuk semacam
+        # "2803/FTSCY/WS95031", bukan kalimat deskriptif biasa
+        if "/" not in ket_text:
+            continue
+        emp = _try_resolve_employee_alias(t.objek)
+        if not emp:
+            norm_objek = _norm_name(t.objek)
+            if norm_objek in known_employees:
+                emp = " ".join(t.objek.split())
+        if not emp:
+            continue
+        key = (coerce_date_safe(t.date), ket_text.lower())
+        groups.setdefault(key, []).append((t, emp))
+    confirmed = set()
+    for (tgl, ket), members in groups.items():
+        distinct_emp = {_norm_name(emp) for _, emp in members}
+        if tgl is not None and ket and len(distinct_emp) >= 2:
+            for t, _ in members:
+                confirmed.add(id(t))
+    return confirmed
+
+
+def coerce_date_safe(value):
+    try:
+        return rc.coerce_date(value)
+    except Exception:
+        return None
+
+
+def _is_gaji_like(t, batch_payroll_ids):
+    """True kalau transaksi ini genuinely gaji (kategori berawalan 'gaji'),
+    ATAU terkonfirmasi bagian dari batch payroll (lihat
+    _find_batch_payroll_ids) walau kategorinya ambigu."""
+    k = (t.kategori or "").strip().lower()
+    if k.startswith("gaji"):
+        return True
+    return id(t) in batch_payroll_ids
 
 
 def write_roster_gaji(wb, months, period_word="kuartal"):
@@ -1013,11 +1132,36 @@ def write_roster_gaji(wb, months, period_word="kuartal"):
                 "gajinya belum dibayar - lihat kolom Catatan.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
-    def _parse_bulan_dari_keterangan(ket):
-        ket_lower = (ket or "").lower()
+    def _parse_bulan_dari_keterangan(t):
+        # cek Keterangan (B) DAN Keterangan Tambahan (I) sekaligus - untuk
+        # sebagian transaksi (mis. "Transfer Keluar" generik di rekening
+        # bank), Keterangan-nya tidak menyebut bulan sama sekali, info
+        # bulan yang sesungguhnya ("Gaji Januari 24") cuma ada di
+        # Keterangan Tambahan
+        text = f"{t.desc or ''} {t.ket or ''}".lower()
         for nama in nama_bulan_list:
-            if nama.lower() in ket_lower:
+            if nama.lower() in text:
                 return nama
+        # kalau teksnya menyebut SALAH SATU dari 12 bulan (bukan cuma 3
+        # bulan kuartal ini) - mis. "Gaji ... Desember 2024" - itu artinya
+        # memang SUDAH ADA info bulan eksplisit, cuma di luar kuartal ini.
+        # JANGAN pakai fallback tanggal transaksi di sini (itu akan salah
+        # menganggapnya gaji bulan transaksi, padahal jelas-jelas accrual
+        # dari bulan lain) - biarkan None supaya masuk "accrual luar
+        # kuartal" seperti seharusnya.
+        for nama_lain in rc.MONTHS_ID[1:]:
+            if nama_lain.lower() in text:
+                return None
+        # fallback: kalau TIDAK ADA teks yang menyebut bulan APAPUN sama
+        # sekali (bukan cuma di luar kuartal, tapi genuinely tidak ada
+        # info bulan di teksnya), pakai bulan TRANSAKSI itu sendiri -
+        # asumsi paling wajar (gaji dibayar untuk bulan itu sendiri, bukan
+        # telat/accrual) daripada kehilangan transaksi ini sama sekali
+        tgl = rc.coerce_date(t.date)
+        if tgl is not None:
+            nama_bulan_transaksi = rc.MONTHS_ID[tgl.month]
+            if nama_bulan_transaksi in nama_bulan_list:
+                return nama_bulan_transaksi
         return None
 
     employee_month_amount = {}  # (kunci-nama, idx-bulan) -> jumlah
@@ -1025,15 +1169,17 @@ def write_roster_gaji(wb, months, period_word="kuartal"):
     canonical_name = {}
     all_employee_keys = []
     n_gaji_luar_kuartal = 0
+    all_txns_flat = [t for m in months for t in m["all_txns"]]
+    batch_payroll_ids = _find_batch_payroll_ids(all_txns_flat)
     for m in months:
         for t in m["all_txns"]:
-            if (t.kategori or "").lower().startswith("gaji") and t.objek:
-                bulan_untuk = _parse_bulan_dari_keterangan(t.desc)
+            if _is_gaji_like(t, batch_payroll_ids) and t.objek:
+                bulan_untuk = _parse_bulan_dari_keterangan(t)
                 if bulan_untuk is None:
                     n_gaji_luar_kuartal += 1
                     continue
                 idx = nama_bulan_list.index(bulan_untuk)
-                canonical = resolve_employee_name(t.objek)
+                canonical = resolve_employee_for_gaji(t)
                 key = canonical.casefold()
                 employees_by_month[idx].add(key)
                 canonical_name.setdefault(key, canonical)
