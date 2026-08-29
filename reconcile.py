@@ -318,6 +318,84 @@ def read_account_sheet(ws):
     return txns, closing_info
 
 
+FLIPTECH_SPLIT_REMAINDER_MAX = 1000  # sisa di bawah ini dianggap biaya
+                                       # admin/bunga gabungan, bukan nominal genuine
+
+
+def split_fliptech_combined_rows(ws):
+    """Sebagian transaksi Fliptech tercatat sebagai SATU baris dengan
+    nominal gabungan (mis. -131103 = -131000 transfer + -103 biaya admin,
+    -67105 = -67000 + -105) - bukan dua baris terpisah seperti konvensi
+    normal ("Bagian dari transaksi Fliptech: Biaya Admin" di baris
+    nol-nominal terpisah). Kalau dibiarkan satu baris, transfer TIDAK
+    AKAN PERNAH cocok dengan pasangannya di rekening lain (yang biasanya
+    nominal genap/dibulatkan), karena selisih kecil (103/105/dst) itu di
+    luar toleransi pencocokan normal.
+
+    Deteksi pola ini (kategori transfer-like, Objek/Keterangan/Keterangan
+    Tambahan menyebut 'fliptech', sisa nominal di bawah Rp1.000 dan bukan
+    0) dan PECAH jadi 2 baris: baris asli jadi nominal genap (dibulatkan
+    ke kelipatan 1000 terdekat ke arah nol), baris baru (disisipkan tepat
+    sesudahnya) untuk sisanya sebagai Biaya Admin Bank (kalau debit) atau
+    Bunga Bank (kalau kredit) - konsisten dengan konvensi Fliptech yang
+    sudah ada di file lain.
+
+    HARUS dipanggil PALING AWAL, sebelum last_data_row/add_helper_column/
+    read_account_sheet - supaya penyisipan baris tidak merusak rumus/
+    kolom bantu yang sudah ditulis di baris-baris sesudahnya."""
+    row = 2
+    while True:
+        tanggal = ws.cell(row=row, column=1).value
+        keterangan = ws.cell(row=row, column=2).value
+        kategori = ws.cell(row=row, column=3).value
+        if tanggal is None and keterangan is None and kategori is None:
+            break  # sudah lewat baris data terakhir
+        objek = ws.cell(row=row, column=8).value
+        ket_tambahan = ws.cell(row=row, column=9).value
+        text = f"{keterangan or ''} {objek or ''} {ket_tambahan or ''}".lower()
+        is_transfer_like = isinstance(kategori, str) and any(kw in kategori.lower() for kw in TRANSFER_KEYWORDS)
+        if is_transfer_like and "fliptech" in text:
+            debit = ws.cell(row=row, column=4).value
+            kredit = ws.cell(row=row, column=5).value
+            is_debit = isinstance(debit, (int, float)) and debit
+            nominal = debit if is_debit else (kredit if isinstance(kredit, (int, float)) else None)
+            if isinstance(nominal, (int, float)) and nominal != 0:
+                remainder = round(abs(nominal) % 1000, 2)
+                if 0 < remainder < FLIPTECH_SPLIT_REMAINDER_MAX:
+                    sign = 1 if nominal > 0 else -1
+                    main_amount = sign * round(abs(nominal) - remainder, 2)
+                    fee_amount = sign * remainder
+                    subjek = ws.cell(row=row, column=7).value
+                    saldo_tercatat = ws.cell(row=row, column=6).value
+                    # baris asli jadi nominal genap; Saldo Kumulatif
+                    # dikosongkan (bukan snapshot resmi bank lagi, cuma
+                    # posisi ANTARA - baris baru di bawah yang bawa
+                    # Saldo Kumulatif resmi hasil rekaman bank)
+                    if is_debit:
+                        ws.cell(row=row, column=4, value=main_amount)
+                    else:
+                        ws.cell(row=row, column=5, value=main_amount)
+                    ws.cell(row=row, column=6, value=None)
+
+                    ws.insert_rows(row + 1)
+                    fee_label = "Biaya Admin Bank" if sign < 0 else "Bunga Bank"
+                    note = (f"Bagian dari transaksi Fliptech: {fee_label} "
+                            "(dipisah otomatis dari nominal gabungan oleh reconcile.py)")
+                    ws.cell(row=row + 1, column=1, value=tanggal)
+                    ws.cell(row=row + 1, column=2, value=note)
+                    ws.cell(row=row + 1, column=3, value="Biaya Admin Bank")
+                    if sign < 0:
+                        ws.cell(row=row + 1, column=4, value=fee_amount)
+                    else:
+                        ws.cell(row=row + 1, column=5, value=fee_amount)
+                    ws.cell(row=row + 1, column=6, value=saldo_tercatat)
+                    ws.cell(row=row + 1, column=7, value="-")
+                    ws.cell(row=row + 1, column=8, value=subjek)
+                    ws.cell(row=row + 1, column=9, value=note)
+                    row += 1  # lewati baris baru yang baru disisipkan
+        row += 1
+
+
 def last_data_row(ws):
     last = 1
     seen_first_row = False
@@ -1871,6 +1949,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     closing_info_by_sheet = {}
     for sname in account_sheets:
         ws = wb[sname]
+        split_fliptech_combined_rows(ws)
         lr = last_data_row(ws)
         sheets_last_row[sname] = lr
         add_helper_column(ws, lr)
