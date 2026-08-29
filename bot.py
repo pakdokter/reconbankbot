@@ -20,6 +20,14 @@ rekonsiliasi bulanan yang SUDAH completed (bulan harus berurutan).
 Outputnya laporan ringkasan/kesimpulan (bukan rekonsiliasi baru - itu
 sudah beres di masing-masing file bulanan).
 
+Kontinuitas Aset Tetap lintas laporan: kalau ada aset tetap yang masih
+disusutkan dari laporan kuartalan/tahunan SEBELUMNYA, upload saja file
+laporan lama itu bersamaan dengan file-file bulanan yang baru (urutan
+bebas) - bot otomatis mengenali file yang punya sheet "Buku Aset Tetap"
+sebagai carry-forward, TIDAK dihitung sebagai salah satu bulan. Kalau
+tidak ada aset tetap yang perlu disambung, tidak perlu upload apa-apa
+tambahan - jalan seperti biasa.
+
 Environment variable yang dibutuhkan:
 - BOT_TOKEN : token bot dari BotFather
 """
@@ -30,6 +38,7 @@ import shutil
 import tempfile
 import time
 
+import openpyxl
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -111,6 +120,18 @@ def _cleanup_cache():
 
 def _multi_user_dir(user_id, mode):
     return os.path.join(MULTI_DIR, mode, str(user_id))
+
+
+def _is_carry_forward_file(path):
+    """Deteksi apakah file yang diupload adalah laporan kuartalan/tahunan
+    LAMA (punya sheet 'Buku Aset Tetap') - kalau iya, dipakai untuk
+    menyambung penyusutan aset, bukan dihitung sebagai salah satu file
+    bulanan yang wajib."""
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True)
+        return "Buku Aset Tetap" in wb.sheetnames
+    except Exception:
+        return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,10 +248,14 @@ async def _start_multi_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     os.makedirs(user_dir, exist_ok=True)
     context.user_data["multi_mode"] = mode
     context.user_data["multi_files"] = []
+    context.user_data["multi_carry_forward"] = []
     await update.message.reply_text(
         f"Mode laporan {cfg['label']} aktif. Upload {cfg['n_files']} file hasil rekonsiliasi "
         "bulanan yang sudah *completed* (bulan harus berurutan, urutan upload bebas - nanti "
         "diurutkan otomatis).\n\n"
+        "Ada aset tetap yang masih disusutkan dari laporan sebelumnya? Upload saja file laporan "
+        "lama itu juga (urutan bebas, campur dengan file bulanan) - bot otomatis mengenalinya "
+        "lewat sheet 'Buku Aset Tetap' dan tidak menghitungnya sebagai salah satu bulan.\n\n"
         "Kirim /batal kalau mau keluar dari mode ini.",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -253,6 +278,7 @@ async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shutil.rmtree(_multi_user_dir(user_id, mode), ignore_errors=True)
     context.user_data["multi_mode"] = None
     context.user_data["multi_files"] = []
+    context.user_data["multi_carry_forward"] = []
     cfg = MULTI_MODE_CONFIG[mode]
     await update.message.reply_text(f"Mode laporan {cfg['label']} dibatalkan.")
 
@@ -260,6 +286,7 @@ async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _reset_multi_mode(context):
     context.user_data["multi_mode"] = None
     context.user_data["multi_files"] = []
+    context.user_data["multi_carry_forward"] = []
 
 
 async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc, mode):
@@ -269,22 +296,34 @@ async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TY
     user_dir = _multi_user_dir(user_id, mode)
     os.makedirs(user_dir, exist_ok=True)
     files = context.user_data.setdefault("multi_files", [])
+    carry_forward = context.user_data.setdefault("multi_carry_forward", [])
 
-    idx = len(files) + 1
-    dest_path = os.path.join(user_dir, f"bulan_{idx}.xlsx")
+    idx = len(files) + len(carry_forward) + 1
+    dest_path = os.path.join(user_dir, f"upload_{idx}.xlsx")
     tg_file = await doc.get_file()
     await tg_file.download_to_drive(dest_path)
+
+    if _is_carry_forward_file(dest_path):
+        carry_forward.append(dest_path)
+        await update.message.reply_text(
+            f"File ini dikenali sebagai laporan {cfg['label']} sebelumnya (ada sheet 'Buku Aset "
+            f"Tetap') - akan dipakai untuk menyambung penyusutan aset, tidak dihitung sebagai "
+            f"salah satu bulan.\n\nProgres bulan: {len(files)}/{n_files}."
+        )
+        return
+
     files.append(dest_path)
 
     if len(files) < n_files:
-        await update.message.reply_text(f"Diterima ({len(files)}/{n_files}). Upload {n_files - len(files)} file lagi.")
+        extra = f" ({len(carry_forward)} file carry-forward aset juga sudah diterima.)" if carry_forward else ""
+        await update.message.reply_text(f"Diterima ({len(files)}/{n_files}).{extra} Upload {n_files - len(files)} file lagi.")
         return
 
     status_msg = await update.message.reply_text(f"{n_files} file diterima, memproses laporan {cfg['label']}...")
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "laporan.xlsx")
         try:
-            summary = cfg["run_fn"](files, output_path)
+            summary = cfg["run_fn"](files, output_path, carry_forward_paths=carry_forward)
         except cfg["error_cls"] as e:
             await status_msg.edit_text(f"Gagal: {e}\n\nKirim /{mode} lagi untuk coba ulang.")
             _reset_multi_mode(context)
@@ -312,6 +351,16 @@ async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TY
                 f"{summary['n_belum_dibayar_bulan_terakhir']} pegawai belum tercatat "
                 f"dibayar di bulan terakhir ({periode[-1]}) - lihat kolom Catatan di "
                 "sheet Roster Gaji, kemungkinan dibebankan sebagai accrual bulan berikutnya."
+            )
+        if summary.get("n_aset_tetap", 0) > 0:
+            carry_note = (
+                f" ({summary['n_aset_carry_forward']} di antaranya disambung dari laporan lama.)"
+                if summary.get("n_aset_carry_forward", 0) > 0 else ""
+            )
+            caption_lines.append(
+                f"Aset tetap tercatat: {summary['n_aset_tetap']}{carry_note} - lihat sheet "
+                "'Buku Aset Tetap' untuk detail jadwal penyusutan. Simpan file ini kalau nanti "
+                "mau membuat laporan berikutnya, supaya penyusutannya bisa disambung lagi."
             )
         await status_msg.delete()
         with open(output_path, "rb") as f:
