@@ -22,6 +22,7 @@ kalkulasi Python yang ditulis sebagai nilai mati kecuali memang tidak
 mungkin direpresentasikan sebagai rumus (contoh: catatan naratif audit).
 """
 
+import re
 import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -85,20 +86,6 @@ CAPITAL_KEYWORDS = [
 # ditemukan: "BI-Fast Transfer Masuk ... (dari rekening sendiri)".
 CAPITAL_SELF_TRANSFER_KEYWORDS = ["dari rekening sendiri", "rekening sendiri"]
 
-# Kata kunci di Keterangan Tambahan yang MEMASTIKAN sebuah transaksi
-# ber-kategori transfer-like ("Transaksi Internal" dst) sebenarnya
-# pembelian utilitas operasional (dibayar via mekanisme non-tunai seperti
-# Fliptech/cicilan), BUKAN transfer antar rekening sendiri yang perlu
-# dicocokkan. Contoh nyata: "Pembelian Listrik via Fliptech" - walau
-# kategorinya "Transaksi Internal", ini pasti Belanja Operasional.
-UTILITY_EXPENSE_KEYWORDS = ["listrik"]
-
-# Vendor tertentu yang transaksinya kadang salah kategori (mis. "Transfer
-# Masuk" untuk kredit kecil terkait pembelian) tapi keterangan/objek-nya
-# memastikan itu memang Belanja Operasional - Yulia Indah Pratiwi adalah
-# kontak untuk toko Anugerah Plastik (pembelian plastik/kemasan).
-VENDOR_EXPENSE_KEYWORDS = ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"]
-
 # Semua varian kata untuk selisih kas kasir (kurang/lebih) dan tip
 # pelanggan - user menegaskan semua ini sama artinya dan harus selalu
 # dianggap kategori "Tip/Minus/Lebih", brapapun tulisan persisnya di
@@ -106,6 +93,39 @@ VENDOR_EXPENSE_KEYWORDS = ["yulia indah pratiwi", "yulia indah pratiw", "anugera
 # Kasir", "Uang Lebih", "Uang Cust", dst - bukan cuma yang persis
 # tertulis "Tip/Minus/Lebih").
 TIP_MINUS_KEYWORDS = ["minus", "lebih", "cust", "tip"]
+
+# Aturan override kategori berdasarkan kata kunci di Keterangan/Keterangan
+# Tambahan/Objek, ditegaskan langsung oleh user berdasarkan pengalaman
+# nyata bisnisnya - dicek SEBELUM aturan-aturan lain (is_transfer, dst),
+# dan MENGGANTIKAN Kategori asli untuk semua perhitungan (lihat
+# Txn.effective_kategori). Urutan penting: yang pertama cocok menang.
+# "any": salah satu kata kunci cukup. "all": semua kata kunci harus ada
+# (tidak harus berdekatan). "sheet_contains": opsional, cuma berlaku
+# kalau nama sheet mengandung teks ini (case-insensitive).
+CATEGORY_OVERRIDE_RULES = [
+    {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
+    {"all": ["cashback", "qris"], "category": "Biaya Admin Bank", "sheet_contains": None},
+    {"any": ["layanan"], "category": "Belanja Operasional", "sheet_contains": "jago"},
+    {"any": ["fb", "facebook", "meta ads"], "category": "Marketing & RnD", "sheet_contains": None},
+    {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
+    {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
+    {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
+]
+
+# Kategori yang SUDAH deliberate/tegas (modal, laba ditahan, saldo awal,
+# gaji) TIDAK boleh ditimpa aturan di atas walau kebetulan Keterangan/
+# Objek-nya menyebut kata kunci yang sama - supaya transaksi yang memang
+# sudah benar tercatat tidak salah kategori ulang.
+_PROTECTED_FROM_CATEGORY_OVERRIDE = {
+    "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
+    "saldo awal", "saldo awal bulan",
+}
+
+
+def _override_keyword_found(pattern, text):
+    return re.search(r"\b" + re.escape(pattern) + r"\b", text) is not None
+
 
 # Kategori saldo awal -> dipakai untuk saldo awal Neraca, dilewati saat
 # menjumlah transaksi berjalan.
@@ -147,13 +167,8 @@ class Txn:
 
     @property
     def is_transfer(self):
-        k = (self.kategori or "").lower()
+        k = (self.effective_kategori or "").lower()
         if any(kw in k for kw in TRANSFER_KEYWORDS):
-            # kecuali keterangan tambahan memastikan ini sebenarnya
-            # pembelian operasional (mis. listrik via Fliptech), bukan
-            # transfer antar rekening sendiri - lihat is_operational_override
-            if self.is_operational_override:
-                return False
             return True
         # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
         # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
@@ -173,37 +188,42 @@ class Txn:
         return any(kw in text for kw in TIP_MINUS_KEYWORDS)
 
     @property
-    def is_operational_override(self):
-        """Transaksi yang kategorinya AMBIGU (transfer-like, mis.
-        'Transaksi Internal', atau 'Transfer Masuk' yang generik) tapi
-        keterangan tambahan/objek-nya memastikan itu memang pembelian
-        operasional - listrik (dibayar via mekanisme non-tunai) atau
-        vendor tertentu yang dikenal (mis. Yulia Indah Pratiwi = Anugerah
-        Plastik).
-
-        SENGAJA dibatasi hanya untuk kategori ambigu di atas - kalau
-        Kategori-nya SUDAH kategori valid lain (mis. 'Belanja Bahan'),
-        override ini TIDAK berlaku walau Objek/Keterangan kebetulan
-        menyebut kata kunci yang sama (mis. nama vendor yang sama dipakai
-        juga untuk pembelian kategori lain) - supaya tidak dobel hitung
-        transaksi yang sebenarnya sudah benar tercatat di kategori lain.
-        """
+    def category_override(self):
+        """Kategori pengganti berdasarkan CATEGORY_OVERRIDE_RULES (kata
+        kunci di Keterangan/Keterangan Tambahan/Objek, ditegaskan user
+        berdasarkan pengalaman nyata bisnisnya) - None kalau tidak ada
+        aturan yang cocok atau kategori aslinya sudah deliberate/tegas
+        (modal, laba ditahan, saldo awal, gaji - lihat
+        _PROTECTED_FROM_CATEGORY_OVERRIDE) dan tidak boleh ditimpa."""
         k = (self.kategori or "").strip().lower()
-        if k == "belanja operasional":
-            return False  # sudah kehitung normal via kategori, jangan dobel
-        is_ambiguous = any(kw in k for kw in TRANSFER_KEYWORDS) or k == "transfer masuk"
-        if not is_ambiguous:
-            return False  # kategori aslinya sudah valid/dikenal lain, jangan disentuh
-        text = f"{self.ket or ''} {self.objek or ''}".lower()
-        if any(kw in text for kw in UTILITY_EXPENSE_KEYWORDS):
-            return True
-        if any(kw in text for kw in VENDOR_EXPENSE_KEYWORDS):
-            return True
-        return False
+        if k in _PROTECTED_FROM_CATEGORY_OVERRIDE or k.startswith("gaji"):
+            return None
+        text = f"{self.desc or ''} {self.ket or ''} {self.objek or ''}".lower()
+        for rule in CATEGORY_OVERRIDE_RULES:
+            sheet_filter = rule.get("sheet_contains")
+            if sheet_filter and sheet_filter not in (self.sheet or "").lower():
+                continue
+            if "any" in rule and not any(_override_keyword_found(kw, text) for kw in rule["any"]):
+                continue
+            if "all" in rule and not all(_override_keyword_found(kw, text) for kw in rule["all"]):
+                continue
+            return rule["category"]
+        return None
+
+    @property
+    def effective_kategori(self):
+        """Kategori yang SEBENARNYA dipakai untuk semua perhitungan (Laba
+        Rugi, Neraca, pencocokan transfer, dst) - hasil category_override
+        kalau ada yang cocok, kalau tidak ya Kategori asli dari data
+        sumber apa adanya. SEMUA rumus SUMIF/SUMIFS kategori di laporan
+        merujuk ke kolom bantu M (ditulis dari nilai ini), bukan langsung
+        ke kolom C (Kategori asli), supaya override konsisten di semua
+        laporan tanpa perlu duplikasi logika di tiap rumus."""
+        return self.category_override or self.kategori
 
     @property
     def is_capital(self):
-        k = (self.kategori or "").lower()
+        k = (self.effective_kategori or "").lower()
         if any(kw in k for kw in CAPITAL_KEYWORDS):
             return True
         if "transfer masuk" in k:
@@ -627,20 +647,14 @@ def compute_balance_status(all_txns_by_sheet):
     mengkapitalisasi 'Belanja Assets')."""
     def sum_exact(txns, category):
         cat = category.strip().lower()
-        return sum(t.nominal for t in txns if (t.kategori or "").strip().lower() == cat)
+        return sum(t.nominal for t in txns if (t.effective_kategori or "").strip().lower() == cat)
 
     def sum_multi(txns, categories):
         cats = {c.strip().lower() for c in categories}
-        return sum(t.nominal for t in txns if (t.kategori or "").strip().lower() in cats)
+        return sum(t.nominal for t in txns if (t.effective_kategori or "").strip().lower() in cats)
 
     def sum_gaji(txns):
-        return sum(t.nominal for t in txns if (t.kategori or "").strip().lower().startswith("gaji"))
-
-    def sum_operasional(txns):
-        return sum(
-            t.nominal for t in txns
-            if (t.kategori or "").strip().lower() == "belanja operasional" or t.is_operational_override
-        )
+        return sum(t.nominal for t in txns if (t.effective_kategori or "").strip().lower().startswith("gaji"))
 
     def sum_tip_minus(txns):
         return sum(t.nominal for t in txns if t.is_tip_minus_variant)
@@ -669,10 +683,7 @@ def compute_balance_status(all_txns_by_sheet):
         saldo_awal = k_values[opening_idx]
 
         revenue = sum_multi(txns, INCOME_CATEGORIES_REVENUE)
-        expense = sum(
-            sum_operasional(txns) if cat == "Belanja Operasional" else sum_exact(txns, cat)
-            for cat in INCOME_CATEGORIES_EXPENSE
-        )
+        expense = sum(sum_exact(txns, cat) for cat in INCOME_CATEGORIES_EXPENSE)
         expense += sum_multi(txns, MARKETING_RND_CATEGORY_TEXTS)
         expense += sum_gaji(txns)
         expense += sum_multi(txns, BANK_FEE_CATEGORY_TEXTS)
@@ -1023,9 +1034,24 @@ def add_helper_column(ws, last_row):
     ws.conditional_formatting.add(
         rng, CellIsRule(operator="greaterThan", formula=["1000"], fill=MED_FILL)
     )
-    ws.conditional_formatting.add(
-        rng, CellIsRule(operator="lessThan", formula=["-1000"], fill=MED_FILL)
-    )
+
+
+def add_effective_category_column(ws, txns):
+    """Kolom bantu M = Kategori Efektif - Kategori ASLI (kolom C), KECUALI
+    ada aturan override yang cocok (lihat Txn.category_override/
+    CATEGORY_OVERRIDE_RULES) - ditulis sebagai NILAI (bukan rumus, karena
+    logikanya melibatkan pencarian kata kunci yang jauh lebih mudah
+    dilakukan di Python daripada rumus Excel murni). SEMUA rumus SUMIF/
+    SUMIFS kategori di laporan keuangan (Laba Rugi, Neraca, Arus Kas, dst)
+    merujuk ke kolom INI, bukan langsung ke kolom C, supaya override
+    konsisten di semua laporan tanpa perlu duplikasi logika di tiap
+    rumus. Kolom C tetap dibiarkan apa adanya (data asli, untuk audit)."""
+    cell = ws.cell(row=1, column=13, value="Kategori Efektif (setelah override kata kunci - dipakai semua rumus)")
+    cell.font = HEADER_FONT
+    cell.fill = HEADER_FILL
+    for t in txns:
+        ws.cell(row=t.row, column=13, value=t.effective_kategori)
+    ws.column_dimensions[get_column_letter(13)].width = 34
 
 
 # ---------------------------------------------------------------------------
@@ -1072,7 +1098,7 @@ def sumif_gaji_bulan_formula(sheet, last_row, nama_bulan):
     bulan tertentu (mis. '*Januari*') - menangani baik gaya lama (bulan ada
     di Kategori) maupun gaya baru/bank (Kategori tetap 'Gaji Pegawai', bulan
     cuma disebut di Keterangan)."""
-    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_c = f"'{sheet}'!$M$2:$M${last_row}"
     rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     if not nama_bulan:
@@ -1193,7 +1219,7 @@ def write_pivot_formula_row(ws, row, label, sheets, per_col_formula_fn, bold=Fal
 
 
 def sumif_one_sheet(sheet, last_row, category):
-    return (f"=SUMIF('{sheet}'!$C$2:$C${last_row},\"{category}\","
+    return (f"=SUMIF('{sheet}'!$M$2:$M${last_row},\"{category}\","
             f"'{sheet}'!$J$2:$J${last_row})")
 
 
@@ -1204,7 +1230,7 @@ def sumif_modal_one_sheet(sheet, last_row):
     Ditambah 'Laba Ditahan Bulanan' (laba bulan berjalan yang disimpan,
     biasanya dimasukkan sebagai modal baru bulan berikutnya atau dana
     darurat) - user menegaskan ini dianggap kategori modal dari owner."""
-    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_c = f"'{sheet}'!$M$2:$M${last_row}"
     rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     return (f"=SUMIF({rng_c},\"Modal & Setoran Pemilik\",{rng_j})"
@@ -1219,7 +1245,7 @@ def sumif_tip_minus_one_sheet(sheet, last_row):
     SUMIFS ditambah) supaya baris yang kebetulan cocok lebih dari satu
     kata kunci/kolom tetap cuma terhitung SEKALI, bukan dobel."""
     rng_b = f"'{sheet}'!$B$2:$B${last_row}"
-    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_c = f"'{sheet}'!$M$2:$M${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     terms = []
     for kw in TIP_MINUS_KEYWORDS:
@@ -1228,42 +1254,12 @@ def sumif_tip_minus_one_sheet(sheet, last_row):
     return f"=SUMPRODUCT(({'+'.join(terms)}>0)*{rng_j})"
 
 
-def sumif_operasional_one_sheet(sheet, last_row):
-    """Belanja Operasional + dua override yang SENGAJA dibatasi hanya
-    untuk kategori AMBIGU (mengandung 'internal' atau 'transfer', mis.
-    'Transaksi Internal'/'Transfer Masuk') dengan Objek/Keterangan
-    Tambahan yang memastikan itu memang pembelian operasional: (1)
-    menyebut 'listrik' (kadang dibayar via mekanisme non-tunai spt
-    Fliptech), dan (2) vendor tertentu yang dikenal (Yulia Indah Pratiwi
-    = toko Anugerah Plastik). TIDAK berlaku untuk kategori yang sudah
-    valid lain (mis. 'Belanja Bahan') walau kebetulan Objek/Keterangannya
-    menyebut kata kunci yang sama - supaya tidak dobel hitung. Pakai
-    SUMPRODUCT (satu kondisi boolean gabungan per baris) sesuai
-    Txn.is_operational_override, bukan beberapa SUMIFS ditambah, supaya
-    baris yang cocok di kedua kolom (Objek DAN Keterangan) tetap cuma
-    terhitung sekali."""
-    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
-    rng_h = f"'{sheet}'!$H$2:$H${last_row}"
-    rng_i = f"'{sheet}'!$I$2:$I${last_row}"
-    rng_j = f"'{sheet}'!$J$2:$J${last_row}"
-    keyword_terms = []
-    for kw in ["listrik", "yulia indah pratiw", "anugerah plastik"]:
-        keyword_terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_i}))")
-        keyword_terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_h}))")
-    ambiguous_cat = f"(ISNUMBER(SEARCH(\"internal\",{rng_c}))+ISNUMBER(SEARCH(\"transfer\",{rng_c}))>0)"
-    keyword_hit = f"({'+'.join(keyword_terms)}>0)"
-    return (
-        f"=SUMIF({rng_c},\"Belanja Operasional\",{rng_j})"
-        f"+SUMPRODUCT(({keyword_hit})*{ambiguous_cat}*{rng_j})"
-    )
-
-
 def sumif_gaji_lainnya_formula(sheet, last_row, nama_bulan_list):
     """Jaring pengaman: tangkap semua baris berkategori 'Gaji*' TAPI
     keterangannya tidak menyebut bulan ini/lalu (mis. gaji utuh dari bulan
     lain, atau baris gaji tanpa nama bulan sama sekali) - supaya tidak ada
     beban gaji yang diam-diam hilang dari Laba Rugi."""
-    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_c = f"'{sheet}'!$M$2:$M${last_row}"
     rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     parts = [f"SUMIF({rng_c},\"Gaji*\",{rng_j})"]
@@ -1305,12 +1301,8 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     r += 1
     exp_rows = []
     for cat in INCOME_CATEGORIES_EXPENSE:
-        if cat == "Belanja Operasional":
-            write_pivot_data_row(ws, r, cat, sheets,
-                                  lambda sheet: sumif_operasional_one_sheet(sheet, sheets_last_row[sheet]))
-        else:
-            write_pivot_data_row(ws, r, cat, sheets,
-                                  lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
+        write_pivot_data_row(ws, r, cat, sheets,
+                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
     write_pivot_data_row(
@@ -1408,7 +1400,7 @@ TRANSFER_CATEGORY_TEXTS = [
 
 def sumif_multi_one_sheet(sheet, last_row, categories):
     parts = [
-        f"SUMIF('{sheet}'!$C$2:$C${last_row},\"{cat}\",'{sheet}'!$J$2:$J${last_row})"
+        f"SUMIF('{sheet}'!$M$2:$M${last_row},\"{cat}\",'{sheet}'!$J$2:$J${last_row})"
         for cat in categories
     ]
     return "=" + "+".join(parts)
@@ -1855,6 +1847,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         sheets_last_row[sname] = lr
         add_helper_column(ws, lr)
         txns, closing_info = read_account_sheet(ws)
+        add_effective_category_column(ws, txns)
         all_txns.extend(txns)
         all_txns_by_sheet[sname] = txns
         closing_info_by_sheet[sname] = closing_info
