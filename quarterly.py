@@ -185,6 +185,12 @@ def sum_operasional(txns):
     ), 2)
 
 
+def sum_tip_minus(txns):
+    """Tip/Minus/Lebih + semua varian kata (minus, lebih, uang cust, tip/
+    tips, dst) - konsisten dengan Txn.is_tip_minus_variant di reconcile.py."""
+    return round(sum(t.nominal for t in txns if t.is_tip_minus_variant), 2)
+
+
 # ---------------------------------------------------------------------------
 # Aset Tetap & Penyusutan - kapitalisasi "Belanja Assets" lalu disusutkan
 # garis lurus, bukan dibebankan penuh di bulan pembelian. Lihat catatan di
@@ -528,10 +534,16 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     r += 1
     other_rows = []
     for cat in rc.OTHER_CATEGORIES:
-        rc.write_pivot_data_row(
-            ws, r, cat, labels,
-            lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
-        )
+        if cat == "Tip/Minus/Lebih":
+            rc.write_pivot_data_row(
+                ws, r, cat, labels,
+                lambda label: sum_tip_minus(_txns_for_label(months, label)),
+            )
+        else:
+            rc.write_pivot_data_row(
+                ws, r, cat, labels,
+                lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
+            )
         other_rows.append(r)
         r += 1
     total_other_row = r
@@ -1123,7 +1135,10 @@ def compute_month_summary(txns, depreciation=0.0):
     expense += sum_category_prefix(txns, "gaji")
     expense += sum_category_multi(txns, rc.BANK_FEE_CATEGORY_TEXTS)
     expense -= depreciation
-    other = sum(sum_category(txns, c) for c in rc.OTHER_CATEGORIES)
+    other = sum(
+        (sum_tip_minus(txns) if c == "Tip/Minus/Lebih" else sum_category(txns, c))
+        for c in rc.OTHER_CATEGORIES
+    )
     net = revenue + expense + other
     return revenue, expense, other, net
 
