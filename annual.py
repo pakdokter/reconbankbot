@@ -181,7 +181,7 @@ def write_saldo_bulanan_per_rekening(wb, months, months_accounts):
 # ulang di sini) supaya satu sumber angka yang sama dipakai di semua sheet.
 # ---------------------------------------------------------------------------
 
-def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summary, business_name=None):
+def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summary, assets, business_name=None):
     name = "Ringkasan Eksekutif"
     if name in wb.sheetnames:
         del wb[name]
@@ -242,7 +242,11 @@ def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summar
     kas_awal_row = kpi_row("Kas Awal Tahun", f"='{balance_sheet}'!{balance_col_b}{balance_ref['saldo_awal']}", bold=False)
     kas_akhir_row = kpi_row("Kas Akhir Tahun", f"='{balance_sheet}'!{balance_total_col}{balance_ref['total_asset']}", bold=False)
     growth_row = kpi_row("Pertumbuhan Kas (Rp)", f"=B{kas_akhir_row}-B{kas_awal_row}", bold=False)
-    kpi_row("Pertumbuhan Kas (%)", f"=(B{kas_akhir_row}-B{kas_awal_row})/ABS(B{kas_awal_row})", bold=False, pct=True)
+    kpi_row(
+        "Pertumbuhan Kas (%)",
+        f'=IF(B{kas_awal_row}=0,"(kas awal Rp0)",(B{kas_akhir_row}-B{kas_awal_row})/ABS(B{kas_awal_row}))',
+        bold=False, pct=True,
+    )
     r += 1
 
     ws.cell(row=r, column=1, value="PEGAWAI")
@@ -268,19 +272,29 @@ def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summar
     ws.cell(row=r, column=1).font = rc.SECTION_FONT
     ws.cell(row=r, column=1).fill = rc.SECTION_FILL
     r += 1
-    summaries = [q.compute_month_summary(m["all_txns"]) for m in months]
+    summaries = [
+        q.compute_month_summary(m["all_txns"], q.depreciation_for_month_idx(assets, i))
+        for i, m in enumerate(months)
+    ]
     revenues = [s[0] for s in summaries]
     expenses = [s[1] for s in summaries]
     nets = [s[3] for s in summaries]
     kas = [m["total_aset"] for m in months]
     all_txns_year = [t for m in months for t in m["all_txns"]]
-    expense_cats = list(rc.INCOME_CATEGORIES_EXPENSE) + ["Marketing & RnD", "Gaji Pegawai", "Biaya Admin Bank"]
+    expense_cats = [c for c in rc.INCOME_CATEGORIES_EXPENSE if c.strip().lower() != q.ASSET_CATEGORY_TEXT]
+    expense_cats = list(expense_cats) + ["Marketing & RnD", "Gaji Pegawai", "Biaya Admin Bank"]
     expense_vals = []
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
+        if cat.strip().lower() == q.ASSET_CATEGORY_TEXT:
+            continue
         expense_vals.append(abs(q.sum_category(all_txns_year, cat)))
     expense_vals.append(abs(q.sum_category_multi(all_txns_year, rc.MARKETING_RND_CATEGORY_TEXTS)))
     expense_vals.append(abs(q.sum_category_prefix(all_txns_year, "gaji")))
     expense_vals.append(abs(q.sum_category_multi(all_txns_year, rc.BANK_FEE_CATEGORY_TEXTS)))
+    if assets:
+        total_depresiasi = sum(q.depreciation_for_month_idx(assets, i) for i in range(len(months)))
+        expense_cats.append("Beban Penyusutan (Aset Tetap)")
+        expense_vals.append(round(total_depresiasi, 2))
     kalimat = q.build_narasi_tren(labels, revenues, expenses, nets, kas, expense_cats, expense_vals)
     for line in kalimat:
         ws.cell(row=r, column=1, value=f"- {line}")
@@ -340,8 +354,8 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     q.write_quarterly_cash_flow(out_wb, months, income_ref, balance_ref, period_word="Tahunan")
     write_saldo_bulanan_per_rekening(out_wb, months, months_accounts)
     roster_summary = q.write_roster_gaji(out_wb, months, period_word="tahun")
-    q.write_analysis_sheet(out_wb, months, period_word="Tahunan")
-    write_ringkasan_eksekutif(out_wb, months, income_ref, balance_ref, roster_summary, business_name)
+    q.write_analysis_sheet(out_wb, months, rel_assets, period_word="Tahunan")
+    write_ringkasan_eksekutif(out_wb, months, income_ref, balance_ref, roster_summary, rel_assets, business_name)
     q.write_buku_aset_tetap(out_wb, all_assets, months)
 
     order = ["Ringkasan Eksekutif", "Laba Rugi Tahunan", "Neraca Tahunan",
