@@ -287,10 +287,7 @@ def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summar
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
         if cat.strip().lower() == q.ASSET_CATEGORY_TEXT:
             continue
-        if cat == "Belanja Operasional":
-            expense_vals.append(abs(q.sum_operasional(all_txns_year)))
-        else:
-            expense_vals.append(abs(q.sum_category(all_txns_year, cat)))
+        expense_vals.append(abs(q.sum_category(all_txns_year, cat)))
     expense_vals.append(abs(q.sum_category_multi(all_txns_year, rc.MARKETING_RND_CATEGORY_TEXTS)))
     expense_vals.append(abs(q.sum_category_prefix(all_txns_year, "gaji")))
     expense_vals.append(abs(q.sum_category_multi(all_txns_year, rc.BANK_FEE_CATEGORY_TEXTS)))
