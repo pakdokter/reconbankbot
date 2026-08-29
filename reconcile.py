@@ -73,6 +73,7 @@ DESC_TRANSFER_KEYWORDS = [
 CAPITAL_KEYWORDS = [
     "modal & setoran pemilik",
     "modal dan setoran pemilik",
+    "laba ditahan bulanan",
 ]
 
 # "Transfer Masuk" sendirian terlalu umum untuk langsung dianggap Modal
@@ -1052,11 +1053,15 @@ def sumif_one_sheet(sheet, last_row, category):
 def sumif_modal_one_sheet(sheet, last_row):
     """Modal & Setoran Pemilik + kasus 'Transfer Masuk ... dari rekening
     sendiri' (uang milik owner sendiri dipindah antar rekening, mis.
-    pencairan investasi pribadi) - lihat catatan di CAPITAL_SELF_TRANSFER_KEYWORDS."""
+    pencairan investasi pribadi) - lihat catatan di CAPITAL_SELF_TRANSFER_KEYWORDS.
+    Ditambah 'Laba Ditahan Bulanan' (laba bulan berjalan yang disimpan,
+    biasanya dimasukkan sebagai modal baru bulan berikutnya atau dana
+    darurat) - user menegaskan ini dianggap kategori modal dari owner."""
     rng_c = f"'{sheet}'!$C$2:$C${last_row}"
     rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
     return (f"=SUMIF({rng_c},\"Modal & Setoran Pemilik\",{rng_j})"
+            f"+SUMIF({rng_c},\"Laba Ditahan Bulanan\",{rng_j})"
             f"+SUMIFS({rng_j},{rng_c},\"Transfer Masuk\",{rng_b},\"*rekening sendiri*\")")
 
 
@@ -1283,7 +1288,7 @@ def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_en
                           lambda sheet: f"='{sheet}'!$K${opening_rows[sheet]}")
     r += 1
     modal_row = r
-    write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (bulan ini)", sheets,
+    write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (+ Laba Ditahan Bulanan) (bulan ini)", sheets,
                           lambda sheet: sumif_modal_one_sheet(sheet, sheets_last_row[sheet]))
     r += 1
     laba_row = r
@@ -1384,7 +1389,7 @@ def write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label):
     write_pivot_section(ws, r, "ARUS KAS DARI AKTIVITAS PENDANAAN", sheets)
     r += 1
     fin_row = r
-    write_pivot_data_row(ws, r, "Modal & Setoran Pemilik", sheets,
+    write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (+ Laba Ditahan Bulanan)", sheets,
                           lambda sheet: sumif_modal_one_sheet(sheet, sheets_last_row[sheet]))
     r += 1
     total_fin_row = r
