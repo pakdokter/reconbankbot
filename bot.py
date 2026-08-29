@@ -15,18 +15,21 @@ hanya keluar kalau ditrigger:
    generate ulang file yang sama + 3 sheet laporan keuangan.
 
 Fungsi TAMBAHAN: laporan keuangan KUARTALAN dan TAHUNAN. Trigger /kuartal
-(3 file) atau /tahunan (12 file) dulu, baru upload file-file hasil
-rekonsiliasi bulanan yang SUDAH completed (bulan harus berurutan).
-Outputnya laporan ringkasan/kesimpulan (bukan rekonsiliasi baru - itu
-sudah beres di masing-masing file bulanan).
+atau /tahunan dulu, baru upload file-file hasil rekonsiliasi bulanan yang
+SUDAH completed (bulan harus berurutan) DITAMBAH file laporan {kuartalan/
+tahunan} SEBELUMNYA (untuk kontinuitas aset & data) - total 4 file untuk
+/kuartal (3 bulanan + 1 laporan lama), 13 file untuk /tahunan (12 bulanan
++ 1 laporan lama). Bot otomatis membedakan mana file bulanan dan mana
+laporan lama lewat sheet "Buku Aset Tetap" (urutan upload bebas). Kalau
+ini laporan pertama kalinya (belum ada laporan sebelumnya), upload file
+bulanan saja lalu kirim /selesai. Outputnya laporan ringkasan/kesimpulan
+(bukan rekonsiliasi baru - itu sudah beres di masing-masing file bulanan).
 
-Kontinuitas Aset Tetap lintas laporan: kalau ada aset tetap yang masih
-disusutkan dari laporan kuartalan/tahunan SEBELUMNYA, upload saja file
-laporan lama itu bersamaan dengan file-file bulanan yang baru (urutan
-bebas) - bot otomatis mengenali file yang punya sheet "Buku Aset Tetap"
-sebagai carry-forward, TIDAK dihitung sebagai salah satu bulan. Kalau
-tidak ada aset tetap yang perlu disambung, tidak perlu upload apa-apa
-tambahan - jalan seperti biasa.
+Kontinuitas yang dijaga lewat file laporan sebelumnya itu ada DUA: (1)
+penyusutan Aset Tetap yang dibeli sebelum periode laporan ini (sheet
+"Buku Aset Tetap"), dan (2) Saldo Awal bulan pertama laporan ini
+dibandingkan dengan Saldo Akhir bulan terakhir laporan sebelumnya (baris
+"Cek Kontinuitas" di sheet Neraca).
 
 Environment variable yang dibutuhkan:
 - BOT_TOKEN : token bot dari BotFather
@@ -68,18 +71,22 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 MULTI_DIR = os.path.join(tempfile.gettempdir(), "reconbot_multi")
 os.makedirs(MULTI_DIR, exist_ok=True)
 
-# konfigurasi tiap mode multi-file: jumlah file yang dibutuhkan, fungsi
-# generator laporan, exception khusus mode itu, dan teks-teks tampilan
+# konfigurasi tiap mode multi-file: jumlah file BULANAN yang dibutuhkan,
+# jumlah file carry-forward (laporan sebelumnya) yang WAJIB disertakan
+# untuk menjaga kontinuitas aset & data, fungsi generator laporan,
+# exception khusus mode itu, dan teks-teks tampilan
 MULTI_MODE_CONFIG = {
     "kuartal": {
-        "n_files": 3,
+        "n_months": 3,
+        "n_carry_forward": 1,
         "run_fn": run_quarterly_report,
         "error_cls": QuarterlyInputError,
         "label": "kuartalan",
         "output_prefix": "Laporan Kuartalan",
     },
     "tahunan": {
-        "n_files": 12,
+        "n_months": 12,
+        "n_carry_forward": 1,
         "run_fn": run_annual_report,
         "error_cls": AnnualInputError,
         "label": "tahunan",
@@ -101,8 +108,8 @@ WELCOME = (
     "Excel beralamat absolut), ada 2 cara:\n"
     "1. Tambahkan kata *laporan* di caption waktu upload file, atau\n"
     "2. Kirim /laporan setelah upload (pakai file yang sama, tanpa upload ulang)\n\n"
-    "Butuh laporan KUARTALAN (3 bulan sekaligus)? Kirim /kuartal.\n"
-    "Butuh laporan TAHUNAN (12 bulan sekaligus)? Kirim /tahunan."
+    "Butuh laporan KUARTALAN (3 bulan + 1 laporan kuartal sebelumnya)? Kirim /kuartal.\n"
+    "Butuh laporan TAHUNAN (12 bulan + 1 laporan tahunan sebelumnya)? Kirim /tahunan."
 )
 
 
@@ -242,6 +249,7 @@ async def laporan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _start_multi_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
     cfg = MULTI_MODE_CONFIG[mode]
+    n_total = cfg["n_months"] + cfg["n_carry_forward"]
     user_id = update.effective_user.id
     user_dir = _multi_user_dir(user_id, mode)
     shutil.rmtree(user_dir, ignore_errors=True)
@@ -250,12 +258,15 @@ async def _start_multi_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data["multi_files"] = []
     context.user_data["multi_carry_forward"] = []
     await update.message.reply_text(
-        f"Mode laporan {cfg['label']} aktif. Upload {cfg['n_files']} file hasil rekonsiliasi "
-        "bulanan yang sudah *completed* (bulan harus berurutan, urutan upload bebas - nanti "
-        "diurutkan otomatis).\n\n"
-        "Ada aset tetap yang masih disusutkan dari laporan sebelumnya? Upload saja file laporan "
-        "lama itu juga (urutan bebas, campur dengan file bulanan) - bot otomatis mengenalinya "
-        "lewat sheet 'Buku Aset Tetap' dan tidak menghitungnya sebagai salah satu bulan.\n\n"
+        f"Mode laporan {cfg['label']} aktif. Upload total {n_total} file (urutan bebas, nanti "
+        f"diurutkan/dipilah otomatis):\n"
+        f"- {cfg['n_months']} file hasil rekonsiliasi bulanan yang sudah *completed* (bulan "
+        "harus berurutan)\n"
+        f"- {cfg['n_carry_forward']} file laporan {cfg['label']} SEBELUMNYA (untuk menjaga "
+        "kontinuitas aset tetap & data antar periode) - bot otomatis mengenalinya lewat sheet "
+        "'Buku Aset Tetap'\n\n"
+        f"Kalau ini laporan {cfg['label']} PERTAMA kalinya (belum ada laporan sebelumnya), "
+        f"upload {cfg['n_months']} file bulanan saja lalu kirim /selesai.\n\n"
         "Kirim /batal kalau mau keluar dari mode ini.",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -283,6 +294,26 @@ async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Mode laporan {cfg['label']} dibatalkan.")
 
 
+async def selesai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Buat kasus laporan PERTAMA kalinya - tidak ada laporan sebelumnya
+    untuk di-carry-forward, jadi trigger manual dengan file bulanan yang
+    sudah ada tanpa menunggu file carry-forward yang memang tidak akan
+    pernah datang."""
+    mode = context.user_data.get("multi_mode")
+    if not mode:
+        await update.message.reply_text("Tidak ada proses laporan kuartalan/tahunan yang sedang berjalan.")
+        return
+    cfg = MULTI_MODE_CONFIG[mode]
+    files = context.user_data.get("multi_files", [])
+    if len(files) != cfg["n_months"]:
+        await update.message.reply_text(
+            f"Baru ada {len(files)}/{cfg['n_months']} file bulanan - upload dulu sampai lengkap "
+            "sebelum kirim /selesai."
+        )
+        return
+    await _process_multi_report(update, context, mode)
+
+
 def _reset_multi_mode(context):
     context.user_data["multi_mode"] = None
     context.user_data["multi_files"] = []
@@ -291,7 +322,8 @@ def _reset_multi_mode(context):
 
 async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc, mode):
     cfg = MULTI_MODE_CONFIG[mode]
-    n_files = cfg["n_files"]
+    n_months = cfg["n_months"]
+    n_carry_forward = cfg["n_carry_forward"]
     user_id = update.effective_user.id
     user_dir = _multi_user_dir(user_id, mode)
     os.makedirs(user_dir, exist_ok=True)
@@ -307,19 +339,40 @@ async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TY
         carry_forward.append(dest_path)
         await update.message.reply_text(
             f"File ini dikenali sebagai laporan {cfg['label']} sebelumnya (ada sheet 'Buku Aset "
-            f"Tetap') - akan dipakai untuk menyambung penyusutan aset, tidak dihitung sebagai "
-            f"salah satu bulan.\n\nProgres bulan: {len(files)}/{n_files}."
+            f"Tetap') - akan dipakai untuk menyambung kontinuitas aset & data.\n\n"
+            f"Progres: {len(files)}/{n_months} bulan, {len(carry_forward)}/{n_carry_forward} "
+            "file carry-forward."
         )
+    else:
+        files.append(dest_path)
+        if len(files) < n_months:
+            await update.message.reply_text(
+                f"Diterima ({len(files)}/{n_months} bulan, {len(carry_forward)}/{n_carry_forward} "
+                f"carry-forward). Upload {n_months - len(files)} file bulanan lagi."
+            )
+            return
+
+    if len(files) >= n_months and len(carry_forward) >= n_carry_forward:
+        await _process_multi_report(update, context, mode)
         return
 
-    files.append(dest_path)
+    if len(files) >= n_months:
+        await update.message.reply_text(
+            f"{n_months} file bulanan sudah lengkap. Upload {n_carry_forward - len(carry_forward)} "
+            f"file laporan {cfg['label']} sebelumnya lagi untuk kontinuitas, atau kirim /selesai "
+            "kalau ini laporan pertama kali (belum ada laporan sebelumnya)."
+        )
 
-    if len(files) < n_files:
-        extra = f" ({len(carry_forward)} file carry-forward aset juga sudah diterima.)" if carry_forward else ""
-        await update.message.reply_text(f"Diterima ({len(files)}/{n_files}).{extra} Upload {n_files - len(files)} file lagi.")
-        return
 
-    status_msg = await update.message.reply_text(f"{n_files} file diterima, memproses laporan {cfg['label']}...")
+async def _process_multi_report(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    cfg = MULTI_MODE_CONFIG[mode]
+    n_months = cfg["n_months"]
+    user_id = update.effective_user.id
+    user_dir = _multi_user_dir(user_id, mode)
+    files = context.user_data.get("multi_files", [])
+    carry_forward = context.user_data.get("multi_carry_forward", [])
+
+    status_msg = await update.message.reply_text(f"Memproses laporan {cfg['label']}...")
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "laporan.xlsx")
         try:
@@ -332,8 +385,8 @@ async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.exception("Gagal memproses laporan %s", cfg["label"])
             await status_msg.edit_text(
-                f"Gagal memproses: {e}\n\nCek apakah semua {n_files} file itu benar hasil rekonsiliasi "
-                f"bulanan yang sudah completed. Kirim /{mode} lagi untuk coba ulang."
+                f"Gagal memproses: {e}\n\nCek apakah semua {n_months} file bulanan itu benar hasil "
+                f"rekonsiliasi bulanan yang sudah completed. Kirim /{mode} lagi untuk coba ulang."
             )
             _reset_multi_mode(context)
             shutil.rmtree(user_dir, ignore_errors=True)
@@ -346,6 +399,11 @@ async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TY
             "",
             f"Jumlah pegawai di roster gaji: {summary['n_pegawai']}",
         ]
+        if not carry_forward:
+            caption_lines.append(
+                "Tidak ada laporan sebelumnya yang di-carry-forward - dianggap laporan pertama "
+                "kalinya, kontinuitas cuma dicek antar bulan di dalam laporan ini saja."
+            )
         if summary["n_belum_dibayar_bulan_terakhir"] > 0:
             caption_lines.append(
                 f"{summary['n_belum_dibayar_bulan_terakhir']} pegawai belum tercatat "
@@ -360,7 +418,7 @@ async def handle_multi_document(update: Update, context: ContextTypes.DEFAULT_TY
             caption_lines.append(
                 f"Aset tetap tercatat: {summary['n_aset_tetap']}{carry_note} - lihat sheet "
                 "'Buku Aset Tetap' untuk detail jadwal penyusutan. Simpan file ini kalau nanti "
-                "mau membuat laporan berikutnya, supaya penyusutannya bisa disambung lagi."
+                "mau membuat laporan berikutnya, supaya kontinuitasnya bisa disambung lagi."
             )
         await status_msg.delete()
         with open(output_path, "rb") as f:
@@ -400,6 +458,7 @@ def main():
     app.add_handler(CommandHandler("laporan", laporan_command))
     app.add_handler(CommandHandler("kuartal", kuartal_command))
     app.add_handler(CommandHandler("tahunan", tahunan_command))
+    app.add_handler(CommandHandler("selesai", selesai_command))
     app.add_handler(CommandHandler("batal", batal_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(error_handler)
