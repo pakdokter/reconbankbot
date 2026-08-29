@@ -306,12 +306,15 @@ def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summar
 # Orkestrasi utama
 # ---------------------------------------------------------------------------
 
-def run_annual_report(paths, output_path, business_name="Stoa Space"):
+def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forward_paths=None):
     """paths: list of 12 path file bulanan (urutan upload bebas, akan
-    disortir kronologis). Return dict ringkasan. Output 7 sheet: Ringkasan
-    Eksekutif, Laba Rugi Tahunan, Neraca Tahunan, Saldo Bulanan per
-    Rekening, Arus Kas Tahunan, Roster Gaji 12 Bulan, Analisis & Tren -
-    tidak ada sheet rekening/transaksi mentah selain saldo per rekening."""
+    disortir kronologis). carry_forward_paths: opsional, list path laporan
+    kuartalan/tahunan SEBELUMNYA (yang punya sheet 'Buku Aset Tetap') untuk
+    menyambung penyusutan aset yang dibeli sebelum periode laporan ini.
+    Return dict ringkasan. Output 8 sheet: Ringkasan Eksekutif, Laba Rugi
+    Tahunan, Neraca Tahunan, Saldo Bulanan per Rekening, Arus Kas Tahunan,
+    Roster Gaji 12 Bulan, Analisis & Tren, Buku Aset Tetap - tidak ada
+    sheet rekening/transaksi mentah selain saldo per rekening."""
     months = [load_month(p) for p in paths]
     months = validate_consecutive_12(months)
     months_accounts = [load_month_accounts(p) for p in paths]
@@ -325,17 +328,25 @@ def run_annual_report(paths, output_path, business_name="Stoa Space"):
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
 
-    income_ref = q.write_quarterly_income_statement(out_wb, months, period_word="Tahunan")
-    balance_ref = q.write_quarterly_balance_sheet(out_wb, months, income_ref, period_word="Tahunan")
+    carried = []
+    for p in (carry_forward_paths or []):
+        carried.extend(q.load_asset_ledger(p))
+    scanned = q.scan_assets_from_months(months)
+    all_assets = q.merge_asset_lists(carried, scanned)
+    rel_assets = q.assets_with_relative_idx(all_assets, months)
+
+    income_ref = q.write_quarterly_income_statement(out_wb, months, rel_assets, period_word="Tahunan")
+    balance_ref = q.write_quarterly_balance_sheet(out_wb, months, income_ref, rel_assets, period_word="Tahunan")
     q.write_quarterly_cash_flow(out_wb, months, income_ref, balance_ref, period_word="Tahunan")
     write_saldo_bulanan_per_rekening(out_wb, months, months_accounts)
     roster_summary = q.write_roster_gaji(out_wb, months, period_word="tahun")
     q.write_analysis_sheet(out_wb, months, period_word="Tahunan")
     write_ringkasan_eksekutif(out_wb, months, income_ref, balance_ref, roster_summary, business_name)
+    q.write_buku_aset_tetap(out_wb, all_assets, months)
 
     order = ["Ringkasan Eksekutif", "Laba Rugi Tahunan", "Neraca Tahunan",
              "Saldo Bulanan per Rekening", "Arus Kas Tahunan",
-             "Roster Gaji 12 Bulan", "Analisis & Tren"]
+             "Roster Gaji 12 Bulan", "Analisis & Tren", "Buku Aset Tetap"]
     out_wb._sheets = [out_wb[s] for s in order]
 
     out_wb.save(output_path)
@@ -344,18 +355,25 @@ def run_annual_report(paths, output_path, business_name="Stoa Space"):
         "periode": [m["label"] for m in months],
         "n_pegawai": roster_summary["n_pegawai"],
         "n_belum_dibayar_bulan_terakhir": roster_summary["n_belum_dibayar_bulan_terakhir"],
+        "n_aset_tetap": len(all_assets),
+        "n_aset_carry_forward": len(carried),
     }
 
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 14:
-        print("Usage: python annual.py bulan1.xlsx ... bulan12.xlsx output.xlsx")
+        print("Usage: python annual.py bulan1.xlsx ... bulan12.xlsx output.xlsx "
+              "[--carry-forward laporan_lama1.xlsx laporan_lama2.xlsx ...]")
         sys.exit(1)
     paths = sys.argv[1:13]
     out = sys.argv[13]
+    carry_forward = []
+    if "--carry-forward" in sys.argv:
+        idx = sys.argv.index("--carry-forward")
+        carry_forward = sys.argv[idx + 1:]
     try:
-        s = run_annual_report(paths, out)
+        s = run_annual_report(paths, out, carry_forward_paths=carry_forward)
         print(s)
     except AnnualInputError as e:
         print("Error:", e)
