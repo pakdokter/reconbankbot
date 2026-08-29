@@ -705,7 +705,7 @@ def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="K
         running = round(running + v, 2)
         modal_kumulatif.append(running)
     write_snapshot_data_row(
-        ws, r, "Modal & Setoran Pemilik (kumulatif s.d. bulan ini)", labels,
+        ws, r, "Modal & Setoran Pemilik + Laba Ditahan Bulanan (kumulatif s.d. bulan ini)", labels,
         lambda label: modal_kumulatif[labels.index(label)],
     )
     r += 1
@@ -902,7 +902,7 @@ def write_quarterly_cash_flow(wb, months, income_ref, balance_ref, period_word="
     r += 1
     fin_row = r
     rc.write_pivot_data_row(
-        ws, r, "Modal & Setoran Pemilik", labels,
+        ws, r, "Modal & Setoran Pemilik (+ Laba Ditahan Bulanan)", labels,
         lambda label: sum_modal(_txns_for_label(months, label)),
     )
     r += 1
