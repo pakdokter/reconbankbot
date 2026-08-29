@@ -247,6 +247,46 @@ def assets_with_relative_idx(assets, months):
     return result
 
 
+def load_previous_period_closing(path):
+    """Baca sheet Neraca (Kuartal/Tahunan) dari file laporan SEBELUMNYA -
+    ambil 'Kas & Setara Kas (Saldo Akhir Bulan)' di kolom paling kanan
+    (AKHIR KUARTAL/TAHUNAN, snapshot bulan terakhir laporan itu). Dipakai
+    untuk mengecek kontinuitas LINTAS laporan (bukan cuma antar bulan di
+    dalam satu laporan yang sama) - kalau Saldo Awal bulan pertama laporan
+    BARU tidak sama dengan angka ini, berarti ada data yang hilang/tidak
+    nyambung antara laporan lama dan baru. Return None kalau sheet Neraca
+    tidak ditemukan atau baris itu tidak ada (mis. file bukan hasil
+    quarterly.py/annual.py)."""
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception:
+        return None
+    neraca_sheet = None
+    for name in wb.sheetnames:
+        if name.startswith("Neraca "):
+            neraca_sheet = name
+            break
+    if neraca_sheet is None:
+        return None
+    ws = wb[neraca_sheet]
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        label = row[0].value
+        if isinstance(label, str) and label.strip().lower().startswith("kas & setara kas"):
+            # kolom paling kanan (AKHIR KUARTAL/TAHUNAN) cuma rumus mirror ke
+            # kolom bulan terakhir - kalau file belum pernah dibuka Excel/
+            # LibreOffice sejak dibuat, rumus itu belum ada nilai cache-nya
+            # (data_only=True akan baca None). Kolom bulan terakhir sendiri
+            # (satu sebelum itu) berisi ANGKA LITERAL, aman dibaca langsung.
+            last_month_cell = row[-2].value
+            if isinstance(last_month_cell, (int, float)):
+                return round(float(last_month_cell), 2)
+            last_cell = row[-1].value
+            if isinstance(last_cell, (int, float)):
+                return round(float(last_cell), 2)
+            return None
+    return None
+
+
 def load_asset_ledger(path):
     """Baca sheet 'Buku Aset Tetap' dari file laporan kuartalan/tahunan
     SEBELUMNYA (kalau ada) - dipakai untuk menyambung penyusutan aset lama
@@ -577,7 +617,7 @@ def write_snapshot_formula_row(ws, row, label, labels, per_col_formula_fn, bold=
 # Neraca Kuartal
 # ---------------------------------------------------------------------------
 
-def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="Kuartal"):
+def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="Kuartal", previous_closing=None):
     name = f"Neraca {period_word}"
     if name in wb.sheetnames:
         del wb[name]
@@ -684,20 +724,41 @@ def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="K
     # SUDAH ADA DI DATA SUMBER (mis. pembulatan bank antar bulan) - bukan
     # bug perhitungan, dan tidak bisa diperbaiki dari sisi laporan ini.
     continuity_row = r
-    continuity_gaps = [0.0]
+    if previous_closing is not None:
+        continuity_gaps = [round(months[0]["total_saldo_awal"] - previous_closing, 2)]
+    else:
+        continuity_gaps = [None]
     for i in range(1, len(months)):
         continuity_gaps.append(round(months[i]["total_saldo_awal"] - months[i - 1]["total_aset"], 2))
     write_snapshot_data_row(
         ws, r, "Cek Kontinuitas: Saldo Awal Bulan Ini - Saldo Akhir Bulan Lalu", labels,
-        lambda label: continuity_gaps[labels.index(label)],
+        lambda label: (
+            continuity_gaps[labels.index(label)]
+            if continuity_gaps[labels.index(label)] is not None
+            else "(tidak ada laporan sebelumnya di-carry-forward)"
+        ),
     )
     r += 1
-    ws.cell(row=r, column=1,
-            value=("Kalau baris di atas tidak 0, itu artinya file bulan ini mendeklarasikan Saldo "
-                   "Awal yang beda dari hasil hitung transaksi bulan sebelumnya - selisih ini SUDAH "
-                   "ADA di data sumber (mis. pembulatan bank saat laporan berganti bulan), bukan "
-                   f"kesalahan perhitungan laporan {period_word.lower()} ini. Kalau 'Selisih Belum "
-                   "Terjelaskan' di atas mendekati angka yang sama, itu kemungkinan besar penyebabnya."))
+    note_lines = [
+        "Kalau baris di atas tidak 0, itu artinya file bulan ini mendeklarasikan Saldo "
+        "Awal yang beda dari hasil hitung transaksi bulan sebelumnya - selisih ini SUDAH "
+        "ADA di data sumber (mis. pembulatan bank saat laporan berganti bulan), bukan "
+        f"kesalahan perhitungan laporan {period_word.lower()} ini. Kalau 'Selisih Belum "
+        "Terjelaskan' di atas mendekati angka yang sama, itu kemungkinan besar penyebabnya.",
+    ]
+    if previous_closing is not None:
+        note_lines.append(
+            f"Kolom {labels[0]} sudah dibandingkan lintas laporan (Saldo Awal file ini vs Saldo "
+            f"Akhir laporan {period_word.lower()} SEBELUMNYA yang di-carry-forward, Rp"
+            f"{previous_closing:,.0f}) - bukan cuma antar bulan di dalam laporan ini saja.".replace(",", ".")
+        )
+    else:
+        note_lines.append(
+            f"Kolom {labels[0]} belum bisa dicek lintas laporan karena tidak ada laporan "
+            f"{period_word.lower()} sebelumnya yang di-carry-forward - kontinuitas cuma "
+            "dicek antar bulan di dalam laporan ini saja."
+        )
+    ws.cell(row=r, column=1, value=" ".join(note_lines))
     ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
     ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=rc.pivot_total_col(labels))
@@ -1266,19 +1327,26 @@ def build_narasi_tren(labels, revenues, expenses, nets, kas, expense_cats, expen
 
 def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     """paths: list of 3 path file bulanan (urutan upload bebas, akan
-    disortir kronologis). carry_forward_paths: opsional, list path file
-    laporan kuartalan/tahunan SEBELUMNYA (yang punya sheet 'Buku Aset
-    Tetap') - dibaca untuk menyambung penyusutan aset yang dibeli sebelum
-    periode laporan ini, supaya kontinuitas aset tetap terjaga lintas
-    laporan. Return dict ringkasan. Output 6 sheet: Laba Rugi Kuartal,
+    disortir kronologis). carry_forward_paths: list path laporan kuartalan/
+    tahunan SEBELUMNYA - dipakai untuk DUA hal sekaligus: (1) menyambung
+    penyusutan aset tetap yang dibeli sebelum periode laporan ini (dibaca
+    dari sheet 'Buku Aset Tetap'), dan (2) mengecek kontinuitas data lintas
+    laporan (Saldo Awal bulan pertama laporan ini dibandingkan dengan Saldo
+    Akhir bulan terakhir laporan sebelumnya, dibaca dari sheet Neraca) -
+    lihat baris 'Cek Kontinuitas' di Neraca Kuartal. Kosongkan/None kalau
+    ini laporan kuartalan PERTAMA (belum ada laporan sebelumnya untuk
+    disambung). Return dict ringkasan. Output 6 sheet: Laba Rugi Kuartal,
     Neraca Kuartal, Arus Kas Kuartal, Roster Gaji 3 Bulan, Analisis & Tren,
     Buku Aset Tetap - tidak ada sheet rekening mentah."""
     months = [load_month(p) for p in paths]
     months = validate_consecutive(months)
 
     carried = []
+    previous_closing = None
     for p in (carry_forward_paths or []):
         carried.extend(load_asset_ledger(p))
+        if previous_closing is None:
+            previous_closing = load_previous_period_closing(p)
     scanned = scan_assets_from_months(months)
     all_assets = merge_asset_lists(carried, scanned)
     rel_assets = assets_with_relative_idx(all_assets, months)
@@ -1287,7 +1355,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     out_wb.remove(out_wb.active)
 
     income_ref = write_quarterly_income_statement(out_wb, months, rel_assets)
-    balance_ref = write_quarterly_balance_sheet(out_wb, months, income_ref, rel_assets)
+    balance_ref = write_quarterly_balance_sheet(out_wb, months, income_ref, rel_assets, previous_closing=previous_closing)
     write_quarterly_cash_flow(out_wb, months, income_ref, balance_ref)
     roster_summary = write_roster_gaji(out_wb, months)
     write_analysis_sheet(out_wb, months, rel_assets)
