@@ -330,14 +330,17 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     Roster Gaji 12 Bulan, Analisis & Tren, Buku Aset Tetap - tidak ada
     sheet rekening/transaksi mentah selain saldo per rekening."""
     months = [load_month(p) for p in paths]
-    months = validate_consecutive_12(months)
-    months_accounts = [load_month_accounts(p) for p in paths]
-    # urutkan months_accounts mengikuti urutan kronologis months (paths
-    # belum tentu sudah urut sebelum validate_consecutive_12 mengurutkannya)
-    order_key = {m["label"]: i for i, m in enumerate(months)}
-    paired = sorted(zip(months, months_accounts), key=lambda pair: order_key[pair[0]["label"]])
-    months = [p[0] for p in paired]
-    months_accounts = [p[1] for p in paired]
+    accounts_raw = [load_month_accounts(p) for p in paths]
+    # urutkan months DAN months_accounts BERSAMAAN sejak awal (kunci sort
+    # yang sama, dipasangkan sebelum diurutkan) - sebelumnya months di-
+    # overwrite jadi terurut lebih dulu lalu di-zip dengan months_accounts
+    # yang masih ikut urutan upload, jadi bulan yang sudah terurut malah
+    # kepasang dengan data rekening bulan LAIN kalau file diupload tidak
+    # berurutan kronologis (mis. dari Desember mundur ke Januari)
+    combined = sorted(zip(months, accounts_raw), key=lambda pair: (pair[0]["year"], pair[0]["month"]))
+    months = [c[0] for c in combined]
+    months_accounts = [c[1] for c in combined]
+    months = validate_consecutive_12(months)  # sudah terurut - ini tinggal validasi berurutan/tidaknya
 
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
