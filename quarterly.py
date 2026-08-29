@@ -963,6 +963,10 @@ EMPLOYEE_ALIASES = {
     "ojan": "Ahmad Roziyan Hidayat",
     "kak ojan": "Ahmad Roziyan Hidayat",
     "owner": "Ahmad Roziyan Hidayat",
+    "latifatul husna": "Latifatul Husna",
+    "eva": "Latifatul Husna",
+    "panji anjanis pran": "Panji Anjanis Pran",
+    "panji": "Panji Anjanis Pran",
 }
 _EMPLOYEE_ALIAS_KEYS_SORTED = sorted(EMPLOYEE_ALIASES.keys(), key=len, reverse=True)
 
