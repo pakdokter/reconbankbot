@@ -561,9 +561,26 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
         del wb["Rekonsiliasi"]
     ws = wb.create_sheet("Rekonsiliasi")
 
+    # Urutkan tiap bagian berdasarkan tanggal transaksi (bukan urutan sheet
+    # rekening lalu baris) - memudahkan audit karena bisa ditelusuri
+    # kronologis lintas semua rekening sekaligus, bukan per-rekening dulu
+    # baru pindah ke rekening berikutnya. coerce_date dipakai karena
+    # sebagian file punya kolom tanggal bertipe teks; None/tak terbaca
+    # ditaruh paling akhir (bukan dianggap "paling awal") biar tidak
+    # menyembunyikan baris bermasalah di atas.
+    def _sort_key(d):
+        parsed = coerce_date(d)
+        return (parsed is None, parsed or datetime.date.max)
+
+    matches = sorted(matches, key=lambda m: _sort_key(m.src.date))
+    combo_matches = sorted(combo_matches, key=lambda cm: _sort_key(cm["src"].date))
+    minus_flags = sorted(minus_flags, key=lambda tf: _sort_key(tf[0].date))
+
     ws["A1"] = "REKONSILIASI ANTAR REKENING"
     ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = "Dibuat otomatis. Setiap baris merujuk langsung (link rumus) ke sel asal di sheet rekening."
+    ws["A2"] = ("Dibuat otomatis. Setiap baris merujuk langsung (link rumus) ke sel asal di sheet "
+                "rekening. Tiap bagian diurutkan berdasarkan tanggal (lintas semua rekening) "
+                "supaya gampang ditelusuri kronologis saat audit.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     # --- Bagian 1: pencocokan transfer antar rekening ---
