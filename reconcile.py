@@ -297,6 +297,31 @@ def days_between(a, b):
     return abs((a - b).days)
 
 
+def _find_fliptech_loan_companion(src, all_txns):
+    """Cari baris pendamping nol-nominal 'Bagian dari transaksi Fliptech: ...'
+    di sheet & tanggal yang sama dengan src, yang keterangannya menyebut
+    kata kunci pinjaman/cicilan/utang - sinyal bahwa transaksi src ini
+    sebenarnya CICILAN PINJAMAN ke pihak luar (Fliptech Lentera Inspirasi
+    sebagai penyedia pembiayaan), bukan transfer antar rekening sendiri,
+    sehingga TIDAK AKAN PERNAH ketemu pasangannya di rekening manapun -
+    beda dengan transfer internal biasa yang genuinely belum ketemu.
+    Return teks catatan itu kalau ketemu, None kalau tidak."""
+    loan_keywords = ["cicilan pinjaman", "cicilan", "pinjaman", "pembayaran utang", "angsuran"]
+    src_date = coerce_date(src.date)
+    for t in all_txns:
+        if t is src or t.sheet != src.sheet or t.nominal != 0:
+            continue
+        if coerce_date(t.date) != src_date:
+            continue
+        text = (t.ket or "").lower()
+        if not text.startswith("bagian dari transaksi fliptech"):
+            continue
+        for kw in loan_keywords:
+            if kw in text:
+                return t.ket
+    return None
+
+
 def find_matches(all_txns, sheet_names):
     """Untuk setiap transaksi bertanda transfer internal, cari pasangan di
     rekening tujuan (berdasarkan Subjek/Objek) dalam jendela +-30 hari,
@@ -424,6 +449,28 @@ def find_matches(all_txns, sheet_names):
                       date_diff=date_diff, nominal_diff=nominal_diff, is_fliptech=is_fliptech)
             )
         else:
+            loan_note = _find_fliptech_loan_companion(src, all_txns)
+            if loan_note is not None:
+                results.append(
+                    Match(
+                        src=src,
+                        dst=None,
+                        confidence="Not applicable (bukan transfer internal)",
+                        reasoning=(
+                            "Baris pendamping Fliptech nol-nominal di baris yang sama "
+                            f"eksplisit menyebut \"{loan_note}\" - ini kemungkinan besar "
+                            "CICILAN PINJAMAN/PEMBIAYAAN ke pihak luar (Fliptech Lentera "
+                            "Inspirasi bertindak sebagai penyedia pembiayaan, bukan sesama "
+                            "rekening internal yang kita lacak), BUKAN transfer antar "
+                            "rekening sendiri. Transaksi seperti ini TIDAK AKAN PERNAH "
+                            "punya pasangan di rekening manapun - pertimbangkan minta "
+                            "bank-statement-bot mengkategorikan ulang jadi kategori "
+                            "cicilan/utang tersendiri (bukan Transaksi Internal) supaya "
+                            "tidak terus muncul di sini."
+                        ),
+                    )
+                )
+                continue
             results.append(
                 Match(
                     src=src,
@@ -1589,7 +1636,16 @@ def run_reconciliation(input_path, output_path, with_statements=False):
 
     wb.save(output_path)
 
-    n_transfer_unmatched = sum(1 for m in matches_section1 if m.dst is None)
+    # match dengan confidence "Not applicable" (teridentifikasi sebagai
+    # cicilan pinjaman via Fliptech, BUKAN transfer internal yang genuinely
+    # belum ketemu pasangannya) tidak dihitung sebagai unmatched - sudah
+    # ada penjelasannya, tidak perlu verifikasi manual lagi
+    n_transfer_unmatched = sum(
+        1 for m in matches_section1 if m.dst is None and m.confidence != "Not applicable (bukan transfer internal)"
+    )
+    n_transfer_not_applicable = sum(
+        1 for m in matches_section1 if m.confidence == "Not applicable (bukan transfer internal)"
+    )
     no_issues = n_transfer_unmatched == 0 and len(minus_flags) == 0
 
     summary = {
@@ -1598,6 +1654,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         "n_transfer_low": sum(1 for m in matches if m.confidence == "Low"),
         "n_transfer_split_merge": len(combo_matches),
         "n_transfer_unmatched": n_transfer_unmatched,
+        "n_transfer_not_applicable": n_transfer_not_applicable,
         "n_minus_flags": len(minus_flags),
         "with_statements": with_statements,
         "period_label": period_label,
