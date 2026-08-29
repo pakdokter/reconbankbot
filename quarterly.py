@@ -1026,18 +1026,28 @@ def write_roster_gaji(wb, months, period_word="kuartal"):
 # Analisis & Tren (sheet ke-5): grafik + pembacaan tren naratif
 # ---------------------------------------------------------------------------
 
-def compute_month_summary(txns):
+def compute_month_summary(txns, depreciation=0.0):
+    """depreciation: beban penyusutan bulan ini (magnitude positif) -
+    'Belanja Assets' DIKECUALIKAN dari beban tunai (dikapitalisasi jadi
+    Aset Tetap, sama seperti perlakuan di Laba Rugi Kuartal/Tahunan),
+    diganti porsi penyusutan bulan ini supaya narasi/grafik di sheet
+    Analisis & Tren dan Ringkasan Eksekutif konsisten dengan angka Laba
+    Rugi yang sesungguhnya, bukan basis kas penuh yang berbeda sendiri."""
     revenue = sum(sum_category(txns, c) for c in rc.INCOME_CATEGORIES_REVENUE)
-    expense = sum(sum_category(txns, c) for c in rc.INCOME_CATEGORIES_EXPENSE)
+    expense = sum(
+        sum_category(txns, c) for c in rc.INCOME_CATEGORIES_EXPENSE
+        if c.strip().lower() != ASSET_CATEGORY_TEXT
+    )
     expense += sum_category_multi(txns, rc.MARKETING_RND_CATEGORY_TEXTS)
     expense += sum_category_prefix(txns, "gaji")
     expense += sum_category_multi(txns, rc.BANK_FEE_CATEGORY_TEXTS)
+    expense -= depreciation
     other = sum(sum_category(txns, c) for c in rc.OTHER_CATEGORIES)
     net = revenue + expense + other
     return revenue, expense, other, net
 
 
-def write_analysis_sheet(wb, months, period_word="Kuartal"):
+def write_analysis_sheet(wb, months, assets, period_word="Kuartal"):
     name = "Analisis & Tren"
     if name in wb.sheetnames:
         del wb[name]
@@ -1049,7 +1059,10 @@ def write_analysis_sheet(wb, months, period_word="Kuartal"):
                 f"Laba Rugi {period_word} & Neraca {period_word}.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
-    summaries = [compute_month_summary(m["all_txns"]) for m in months]
+    summaries = [
+        compute_month_summary(m["all_txns"], depreciation_for_month_idx(assets, i))
+        for i, m in enumerate(months)
+    ]
     revenues = [s[0] for s in summaries]
     expenses = [s[1] for s in summaries]  # negatif
     nets = [s[3] for s in summaries]
@@ -1092,13 +1105,20 @@ def write_analysis_sheet(wb, months, period_word="Kuartal"):
     r += 1
     data2_start = r
     all_txns_quarter = [t for m in months for t in m["all_txns"]]
-    expense_cats = list(rc.INCOME_CATEGORIES_EXPENSE) + ["Marketing & RnD", "Gaji Pegawai", "Biaya Admin Bank"]
+    expense_cats = [c for c in rc.INCOME_CATEGORIES_EXPENSE if c.strip().lower() != ASSET_CATEGORY_TEXT]
+    expense_cats = list(expense_cats) + ["Marketing & RnD", "Gaji Pegawai", "Biaya Admin Bank"]
     expense_vals = []
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
+        if cat.strip().lower() == ASSET_CATEGORY_TEXT:
+            continue
         expense_vals.append(abs(sum_category(all_txns_quarter, cat)))
     expense_vals.append(abs(sum_category_multi(all_txns_quarter, rc.MARKETING_RND_CATEGORY_TEXTS)))
     expense_vals.append(abs(sum_category_prefix(all_txns_quarter, "gaji")))
     expense_vals.append(abs(sum_category_multi(all_txns_quarter, rc.BANK_FEE_CATEGORY_TEXTS)))
+    if assets:
+        total_depresiasi = sum(depreciation_for_month_idx(assets, i) for i in range(len(months)))
+        expense_cats.append("Beban Penyusutan (Aset Tetap)")
+        expense_vals.append(round(total_depresiasi, 2))
     for cat, val in zip(expense_cats, expense_vals):
         ws.cell(row=r, column=1, value=cat)
         ws.cell(row=r, column=2, value=val)
@@ -1270,7 +1290,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     balance_ref = write_quarterly_balance_sheet(out_wb, months, income_ref, rel_assets)
     write_quarterly_cash_flow(out_wb, months, income_ref, balance_ref)
     roster_summary = write_roster_gaji(out_wb, months)
-    write_analysis_sheet(out_wb, months)
+    write_analysis_sheet(out_wb, months, rel_assets)
     write_buku_aset_tetap(out_wb, all_assets, months)
 
     order = ["Laba Rugi Kuartal", "Neraca Kuartal", "Arus Kas Kuartal",
