@@ -84,6 +84,20 @@ CAPITAL_KEYWORDS = [
 # ditemukan: "BI-Fast Transfer Masuk ... (dari rekening sendiri)".
 CAPITAL_SELF_TRANSFER_KEYWORDS = ["dari rekening sendiri", "rekening sendiri"]
 
+# Kata kunci di Keterangan Tambahan yang MEMASTIKAN sebuah transaksi
+# ber-kategori transfer-like ("Transaksi Internal" dst) sebenarnya
+# pembelian utilitas operasional (dibayar via mekanisme non-tunai seperti
+# Fliptech/cicilan), BUKAN transfer antar rekening sendiri yang perlu
+# dicocokkan. Contoh nyata: "Pembelian Listrik via Fliptech" - walau
+# kategorinya "Transaksi Internal", ini pasti Belanja Operasional.
+UTILITY_EXPENSE_KEYWORDS = ["listrik"]
+
+# Vendor tertentu yang transaksinya kadang salah kategori (mis. "Transfer
+# Masuk" untuk kredit kecil terkait pembelian) tapi keterangan/objek-nya
+# memastikan itu memang Belanja Operasional - Yulia Indah Pratiwi adalah
+# kontak untuk toko Anugerah Plastik (pembelian plastik/kemasan).
+VENDOR_EXPENSE_KEYWORDS = ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"]
+
 # Kategori saldo awal -> dipakai untuk saldo awal Neraca, dilewati saat
 # menjumlah transaksi berjalan.
 OPENING_KEYWORDS = ["saldo awal"]
@@ -126,6 +140,11 @@ class Txn:
     def is_transfer(self):
         k = (self.kategori or "").lower()
         if any(kw in k for kw in TRANSFER_KEYWORDS):
+            # kecuali keterangan tambahan memastikan ini sebenarnya
+            # pembelian operasional (mis. listrik via Fliptech), bukan
+            # transfer antar rekening sendiri - lihat is_operational_override
+            if self.is_operational_override:
+                return False
             return True
         # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
         # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
@@ -134,6 +153,23 @@ class Txn:
             return False
         d = (self.desc or "").lower()
         return any(kw in d for kw in DESC_TRANSFER_KEYWORDS)
+
+    @property
+    def is_operational_override(self):
+        """Transaksi yang kategorinya BUKAN 'Belanja Operasional' (atau
+        malah tertulis kategori transfer-like) tapi keterangan tambahan/
+        objek-nya memastikan itu memang pembelian operasional - listrik
+        (dibayar via mekanisme non-tunai) atau vendor tertentu yang
+        dikenal (mis. Yulia Indah Pratiwi = Anugerah Plastik, meski
+        kategori tertulis 'Transfer Masuk')."""
+        if (self.kategori or "").strip().lower() == "belanja operasional":
+            return False  # sudah kehitung normal via kategori, jangan dobel
+        text = f"{self.ket or ''} {self.objek or ''}".lower()
+        if any(kw in text for kw in UTILITY_EXPENSE_KEYWORDS):
+            return True
+        if any(kw in text for kw in VENDOR_EXPENSE_KEYWORDS):
+            return True
+        return False
 
     @property
     def is_capital(self):
@@ -1006,6 +1042,25 @@ def sumif_modal_one_sheet(sheet, last_row):
             f"+SUMIFS({rng_j},{rng_c},\"Transfer Masuk\",{rng_b},\"*rekening sendiri*\")")
 
 
+def sumif_operasional_one_sheet(sheet, last_row):
+    """Belanja Operasional + dua override yang keterangan tambahannya
+    (kolom I) memastikan itu memang pembelian operasional walau
+    kategorinya bukan/salah 'Belanja Operasional': (1) menyebut 'listrik'
+    (pembelian listrik, kadang dibayar via mekanisme non-tunai spt
+    Fliptech dan tertulis kategori transfer-like), dan (2) vendor
+    tertentu yang dikenal (Yulia Indah Pratiwi = toko Anugerah Plastik) -
+    lihat UTILITY_EXPENSE_KEYWORDS dan VENDOR_EXPENSE_KEYWORDS."""
+    rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_i = f"'{sheet}'!$I$2:$I${last_row}"
+    rng_j = f"'{sheet}'!$J$2:$J${last_row}"
+    return (
+        f"=SUMIF({rng_c},\"Belanja Operasional\",{rng_j})"
+        f"+SUMIFS({rng_j},{rng_c},\"<>Belanja Operasional\",{rng_i},\"*listrik*\")"
+        f"+SUMIFS({rng_j},{rng_c},\"<>Belanja Operasional\",{rng_i},\"*yulia indah pratiw*\")"
+        f"+SUMIFS({rng_j},{rng_c},\"<>Belanja Operasional\",{rng_i},\"*anugerah plastik*\")"
+    )
+
+
 def sumif_gaji_lainnya_formula(sheet, last_row, nama_bulan_list):
     """Jaring pengaman: tangkap semua baris berkategori 'Gaji*' TAPI
     keterangannya tidak menyebut bulan ini/lalu (mis. gaji utuh dari bulan
@@ -1053,8 +1108,12 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     r += 1
     exp_rows = []
     for cat in INCOME_CATEGORIES_EXPENSE:
-        write_pivot_data_row(ws, r, cat, sheets,
-                              lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
+        if cat == "Belanja Operasional":
+            write_pivot_data_row(ws, r, cat, sheets,
+                                  lambda sheet: sumif_operasional_one_sheet(sheet, sheets_last_row[sheet]))
+        else:
+            write_pivot_data_row(ws, r, cat, sheets,
+                                  lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
         r += 1
     write_pivot_data_row(
