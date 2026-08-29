@@ -26,8 +26,21 @@ sheet, itu akan salah masuk kolom bulan pembayaran padahal seharusnya
 kolom bulan yang digaji. Baris "Gaji Pegawai" di Laba Rugi Kuartal TIDAK
 memakai logika ini - itu tetap dihitung per bulan pembayaran (basis kas),
 karena Laba Rugi/Neraca memang laporan basis kas bulan berjalan.
+
+Catatan soal Aset Tetap & Penyusutan: transaksi berkategori "Belanja
+Assets" TIDAK dibebankan penuh di bulan pembeliannya (beda dengan
+reconcile.py versi bulanan, yang tidak punya visibilitas lintas bulan
+untuk melakukan ini) - di sini dikapitalisasi jadi Aset Tetap lalu
+disusutkan garis lurus per bulan. Aturan masa manfaat: nilai aset dibagi
+Rp15.000.000 dibulatkan ke atas = jumlah tahun masa manfaat (berlaku
+kelipatan - Rp20jt jadi 2 tahun, Rp45jt jadi 3 tahun, dst), minimal 1
+tahun. KETERBATASAN: hanya aset yang transaksi pembeliannya ADA di salah
+satu bulan yang di-input laporan ini yang terdeteksi - aset yang dibeli
+SEBELUM periode laporan tidak ikut disusutkan karena datanya di luar
+jangkauan file yang diupload.
 """
 
+import math
 import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -163,6 +176,207 @@ def sum_modal(txns):
     return round(sum(t.nominal for t in txns if t.is_capital), 2)
 
 
+# ---------------------------------------------------------------------------
+# Aset Tetap & Penyusutan - kapitalisasi "Belanja Assets" lalu disusutkan
+# garis lurus, bukan dibebankan penuh di bulan pembelian. Lihat catatan di
+# docstring atas file ini untuk aturan masa manfaat & keterbatasannya.
+# ---------------------------------------------------------------------------
+
+ASSET_CATEGORY_TEXT = "belanja assets"
+DEPRECIATION_THRESHOLD = 15_000_000  # per Rp15jt kelipatan = +1 tahun masa manfaat
+
+
+def scan_assets_from_months(months):
+    """Scan semua bulan buat cari transaksi 'Belanja Assets', bangun daftar
+    aset tetap dengan jadwal penyusutan garis lurus. Tanggal beli disimpan
+    ABSOLUT (acquired_year/acquired_month), bukan index relatif ke laporan
+    ini - supaya bisa digabung dengan aset dari laporan lain (kontinuitas
+    lintas kuartal/tahun) lewat merge_asset_lists()."""
+    assets = []
+    for m in months:
+        for t in m["all_txns"]:
+            if (t.kategori or "").strip().lower() != ASSET_CATEGORY_TEXT:
+                continue
+            cost = abs(t.nominal)
+            if cost <= 0:
+                continue
+            n_tahun = max(math.ceil(cost / DEPRECIATION_THRESHOLD), 1)
+            useful_life_months = n_tahun * 12
+            monthly_dep = round(cost / useful_life_months, 2)
+            assets.append({
+                "acquired_year": m["year"], "acquired_month": m["month"],
+                "label": m["label"], "desc": t.desc, "cost": cost,
+                "n_tahun": n_tahun, "useful_life_months": useful_life_months,
+                "monthly_dep": monthly_dep,
+            })
+    return assets
+
+
+def _asset_key(a):
+    """Kunci alami buat deduplikasi - kalau bulan yang sama ikut ter-scan
+    ulang di laporan lain (mis. kuartal Q1 dan laporan tahunan yang sama-sama
+    mencakup Januari), aset yang sama tidak didaftarkan dobel."""
+    return (a["acquired_year"], a["acquired_month"], a["desc"], round(a["cost"], 2))
+
+
+def merge_asset_lists(*asset_lists):
+    """Gabung beberapa daftar aset (mis. dari buku aset laporan sebelumnya +
+    hasil scan bulan-bulan baru), dedup berdasarkan _asset_key. Kalau kunci
+    sama muncul di lebih dari satu daftar, yang dipakai adalah yang pertama
+    ditemukan (urutan argumen menentukan prioritas)."""
+    merged = {}
+    for lst in asset_lists:
+        for a in lst:
+            key = _asset_key(a)
+            if key not in merged:
+                merged[key] = a
+    return list(merged.values())
+
+
+def assets_with_relative_idx(assets, months):
+    """Hitung month_idx RELATIF terhadap bulan pertama laporan ini (months[0])
+    untuk tiap aset - bisa NEGATIF kalau aset itu dibeli sebelum periode
+    laporan ini (dari laporan sebelumnya yang di-carry-forward), itu wajar
+    dan tetap dihitung benar oleh depreciation_for_month_idx/
+    book_value_at_month_idx karena keduanya cuma bandingkan rentang."""
+    base_year, base_month = months[0]["year"], months[0]["month"]
+    result = []
+    for a in assets:
+        rel_idx = (a["acquired_year"] - base_year) * 12 + (a["acquired_month"] - base_month)
+        result.append({**a, "month_idx": rel_idx})
+    return result
+
+
+def load_asset_ledger(path):
+    """Baca sheet 'Buku Aset Tetap' dari file laporan kuartalan/tahunan
+    SEBELUMNYA (kalau ada) - dipakai untuk menyambung penyusutan aset lama
+    yang dibeli SEBELUM periode laporan yang sedang dibuat. Return list
+    kosong kalau sheet itu tidak ada (mis. laporan lama belum punya fitur
+    ini, atau memang belum ada aset tetap sama sekali)."""
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception:
+        return []
+    name = "Buku Aset Tetap"
+    if name not in wb.sheetnames:
+        return []
+    ws = wb[name]
+    assets = []
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+        if not row or row[0] is None:
+            continue
+        try:
+            acquired_year, acquired_month, label, desc, cost, n_tahun = (
+                int(row[0]), int(row[1]), row[2], row[3], float(row[4]), int(row[5])
+            )
+        except (TypeError, ValueError):
+            continue
+        useful_life_months = n_tahun * 12
+        monthly_dep = round(cost / useful_life_months, 2)
+        assets.append({
+            "acquired_year": acquired_year, "acquired_month": acquired_month,
+            "label": label, "desc": desc, "cost": cost, "n_tahun": n_tahun,
+            "useful_life_months": useful_life_months, "monthly_dep": monthly_dep,
+        })
+    return assets
+
+
+def write_buku_aset_tetap(wb, assets, months):
+    """Sheet 'Buku Aset Tetap' - daftar LENGKAP semua aset yang diketahui
+    (dari laporan ini + yang di-carry-forward dari laporan sebelumnya),
+    dengan 2 kolom pertama (Tahun Beli, Bulan Beli) tersembunyi dari mata
+    tapi tetap ada buat dibaca ulang otomatis oleh load_asset_ledger() saat
+    laporan BERIKUTNYA dibuat - itu yang menjaga kontinuitas lintas
+    kuartal/tahun. Selalu dibuat (bahkan kalau assets kosong) supaya
+    strukturnya konsisten buat laporan berikutnya membaca."""
+    name = "Buku Aset Tetap"
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    labels = [m["label"] for m in months]
+    last_year, last_month = months[-1]["year"], months[-1]["month"]
+    last_idx = len(months) - 1
+
+    ws["A1"] = "BUKU ASET TETAP (INDUK) - UNTUK KONTINUITAS ANTAR LAPORAN"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = ("JANGAN HAPUS/UBAH kolom Tahun Beli & Bulan Beli - laporan kuartalan/tahunan "
+                "BERIKUTNYA akan membaca sheet ini otomatis kalau file ini dipakai sebagai "
+                "'carry-forward' untuk menyambung penyusutan aset yang dibeli sebelum periode "
+                "laporan baru itu.")
+    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
+
+    r = 4
+    headers = ["Tahun Beli", "Bulan Beli", "Label Bulan Beli", "Deskripsi", "Nilai Perolehan",
+               "Masa Manfaat (Tahun)", "Penyusutan per Bulan", "Akumulasi Penyusutan s.d. Akhir Laporan Ini",
+               "Nilai Buku Akhir Laporan Ini", "Status"]
+    hdr_row = r
+    for i, h in enumerate(headers, start=1):
+        ws.cell(row=hdr_row, column=i, value=h)
+    rc.style_header(ws, hdr_row, len(headers))
+    r += 1
+
+    rel_assets = assets_with_relative_idx(assets, months)
+    for a, rel in zip(assets, rel_assets):
+        month_idx = rel["month_idx"]
+        bulan_berjalan = min(max(last_idx - month_idx + 1, 0), a["useful_life_months"])
+        akumulasi = round(bulan_berjalan * a["monthly_dep"], 2)
+        nilai_buku = max(round(a["cost"] - akumulasi, 2), 0.0)
+        lunas = bulan_berjalan >= a["useful_life_months"]
+        ws.cell(row=r, column=1, value=a["acquired_year"])
+        ws.cell(row=r, column=2, value=a["acquired_month"])
+        ws.cell(row=r, column=3, value=a["label"])
+        ws.cell(row=r, column=4, value=a["desc"])
+        ws.cell(row=r, column=5, value=a["cost"])
+        ws.cell(row=r, column=6, value=a["n_tahun"])
+        ws.cell(row=r, column=7, value=a["monthly_dep"])
+        ws.cell(row=r, column=8, value=akumulasi)
+        ws.cell(row=r, column=9, value=nilai_buku)
+        ws.cell(row=r, column=10, value="Lunas (nilai buku 0)" if lunas else "Masih disusutkan")
+        for c in (5, 7, 8, 9):
+            ws.cell(row=r, column=c).number_format = rc.NUMBER_FORMAT
+        for c in range(1, len(headers) + 1):
+            ws.cell(row=r, column=c).border = rc.BORDER
+        r += 1
+
+    if not assets:
+        ws.cell(row=r, column=1, value="(belum ada transaksi 'Belanja Assets' yang terdeteksi)")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+
+    ws.column_dimensions["A"].width = 10
+    ws.column_dimensions["B"].width = 10
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 30
+    for col in "EFGHI":
+        ws.column_dimensions[col].width = 20
+    ws.column_dimensions["J"].width = 20
+    ws.freeze_panes = "A5"
+    return ws
+
+
+def depreciation_for_month_idx(assets, month_idx):
+    """Total beban penyusutan SEMUA aset terdaftar untuk bulan ke month_idx
+    (0-based) - 0 kalau bulan itu sebelum aset dibeli atau sudah lewat masa
+    manfaatnya."""
+    total = 0.0
+    for a in assets:
+        if a["month_idx"] <= month_idx < a["month_idx"] + a["useful_life_months"]:
+            total += a["monthly_dep"]
+    return round(total, 2)
+
+
+def book_value_at_month_idx(assets, month_idx):
+    """Total nilai buku bersih (nilai perolehan - akumulasi penyusutan)
+    SEMUA aset terdaftar, per AKHIR bulan ke month_idx (0-based)."""
+    total = 0.0
+    for a in assets:
+        if a["month_idx"] > month_idx:
+            continue  # belum dibeli di bulan ini
+        bulan_berjalan = min(month_idx - a["month_idx"] + 1, a["useful_life_months"])
+        akumulasi = round(bulan_berjalan * a["monthly_dep"], 2)
+        total += max(a["cost"] - akumulasi, 0.0)
+    return round(total, 2)
+
+
 def _txns_for_label(months, label):
     for m in months:
         if m["label"] == label:
@@ -181,7 +395,7 @@ def _nama_bulan_short(label):
 # Roster Gaji), sesuai kebutuhan laporan ini apa adanya.
 # ---------------------------------------------------------------------------
 
-def write_quarterly_income_statement(wb, months, period_word="Kuartal"):
+def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     name = f"Laba Rugi {period_word}"
     if name in wb.sheetnames:
         del wb[name]
@@ -191,7 +405,9 @@ def write_quarterly_income_statement(wb, months, period_word="Kuartal"):
     ws["A1"] = f"LAPORAN LABA RUGI {period_word.upper()} - {period_text.upper()}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = (f"Kolom = tiap bulan (basis kas, dihitung dari data sumber), kolom TOTAL = jumlah "
-                f"{len(labels)} bulan. Roster gaji per pegawai (basis accrual) ada di sheet terpisah.")
+                f"{len(labels)} bulan. Roster gaji per pegawai (basis accrual) ada di sheet terpisah. "
+                "Pembelian aset tetap TIDAK dibebankan penuh di sini - disusutkan garis lurus "
+                "(baris 'Beban Penyusutan'), sisanya jadi Aset Tetap di Neraca.")
     ws["A2"].font = Font(italic=True, size=9, color="6B7280")
 
     r = 4
@@ -216,6 +432,8 @@ def write_quarterly_income_statement(wb, months, period_word="Kuartal"):
     r += 1
     exp_rows = []
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
+        if cat.strip().lower() == ASSET_CATEGORY_TEXT:
+            continue  # dikapitalisasi jadi Aset Tetap, bukan beban tunai penuh - lihat baris Beban Penyusutan
         rc.write_pivot_data_row(
             ws, r, cat, labels,
             lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
@@ -240,6 +458,13 @@ def write_quarterly_income_statement(wb, months, period_word="Kuartal"):
     )
     exp_rows.append(r)
     r += 1
+    if assets:
+        rc.write_pivot_data_row(
+            ws, r, "Beban Penyusutan (Aset Tetap, garis lurus)", labels,
+            lambda label: -depreciation_for_month_idx(assets, labels.index(label)),
+        )
+        exp_rows.append(r)
+        r += 1
     total_exp_row = r
     rc.write_pivot_subtotal_row(ws, r, "Total Beban", labels, exp_rows)
     r += 2
@@ -352,7 +577,7 @@ def write_snapshot_formula_row(ws, row, label, labels, per_col_formula_fn, bold=
 # Neraca Kuartal
 # ---------------------------------------------------------------------------
 
-def write_quarterly_balance_sheet(wb, months, income_ref, period_word="Kuartal"):
+def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="Kuartal"):
     name = f"Neraca {period_word}"
     if name in wb.sheetnames:
         del wb[name]
@@ -368,16 +593,31 @@ def write_quarterly_balance_sheet(wb, months, income_ref, period_word="Kuartal")
     write_snapshot_header(ws, r, labels, period_word)
     r += 1
 
-    rc.write_pivot_section(ws, r, "ASET (KAS & SETARA KAS)", labels)
+    rc.write_pivot_section(ws, r, "ASET", labels)
     r += 1
     kas_row = r
     write_snapshot_data_row(
         ws, r, "Kas & Setara Kas (Saldo Akhir Bulan)", labels,
         lambda label: next(m["total_aset"] for m in months if m["label"] == label),
-        bold=True,
     )
-    total_asset_row = kas_row
-    r += 2
+    r += 1
+    if assets:
+        aset_tetap_row = r
+        write_snapshot_data_row(
+            ws, r, "Aset Tetap (Nilai Buku Bersih, setelah penyusutan)", labels,
+            lambda label: book_value_at_month_idx(assets, labels.index(label)),
+        )
+        r += 1
+        total_asset_row = r
+        write_snapshot_subtotal_row(ws, r, "Total Aset", labels, [kas_row, aset_tetap_row])
+        r += 1
+    else:
+        total_asset_row = kas_row
+        ws.cell(row=kas_row, column=1).font = Font(bold=True)
+        for i in range(len(labels)):
+            ws.cell(row=kas_row, column=2 + i).font = Font(bold=True)
+        ws.cell(row=kas_row, column=rc.pivot_total_col(labels)).font = Font(bold=True)
+    r += 1
 
     rc.write_pivot_section(ws, r, f"EKUITAS (kumulatif sejak awal {period_word.lower()})", labels)
     r += 1
@@ -1004,25 +1244,37 @@ def build_narasi_tren(labels, revenues, expenses, nets, kas, expense_cats, expen
 # Orkestrasi utama
 # ---------------------------------------------------------------------------
 
-def run_quarterly_report(paths, output_path):
+def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     """paths: list of 3 path file bulanan (urutan upload bebas, akan
-    disortir kronologis). Return dict ringkasan. Output HANYA 5 sheet:
-    Laba Rugi Kuartal, Neraca Kuartal, Arus Kas Kuartal, Roster Gaji 3
-    Bulan, Analisis & Tren - tidak ada sheet rekening mentah."""
+    disortir kronologis). carry_forward_paths: opsional, list path file
+    laporan kuartalan/tahunan SEBELUMNYA (yang punya sheet 'Buku Aset
+    Tetap') - dibaca untuk menyambung penyusutan aset yang dibeli sebelum
+    periode laporan ini, supaya kontinuitas aset tetap terjaga lintas
+    laporan. Return dict ringkasan. Output 6 sheet: Laba Rugi Kuartal,
+    Neraca Kuartal, Arus Kas Kuartal, Roster Gaji 3 Bulan, Analisis & Tren,
+    Buku Aset Tetap - tidak ada sheet rekening mentah."""
     months = [load_month(p) for p in paths]
     months = validate_consecutive(months)
+
+    carried = []
+    for p in (carry_forward_paths or []):
+        carried.extend(load_asset_ledger(p))
+    scanned = scan_assets_from_months(months)
+    all_assets = merge_asset_lists(carried, scanned)
+    rel_assets = assets_with_relative_idx(all_assets, months)
 
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
 
-    income_ref = write_quarterly_income_statement(out_wb, months)
-    balance_ref = write_quarterly_balance_sheet(out_wb, months, income_ref)
+    income_ref = write_quarterly_income_statement(out_wb, months, rel_assets)
+    balance_ref = write_quarterly_balance_sheet(out_wb, months, income_ref, rel_assets)
     write_quarterly_cash_flow(out_wb, months, income_ref, balance_ref)
     roster_summary = write_roster_gaji(out_wb, months)
     write_analysis_sheet(out_wb, months)
+    write_buku_aset_tetap(out_wb, all_assets, months)
 
     order = ["Laba Rugi Kuartal", "Neraca Kuartal", "Arus Kas Kuartal",
-             "Roster Gaji 3 Bulan", "Analisis & Tren"]
+             "Roster Gaji 3 Bulan", "Analisis & Tren", "Buku Aset Tetap"]
     out_wb._sheets = [out_wb[s] for s in order]
 
     out_wb.save(output_path)
@@ -1031,18 +1283,25 @@ def run_quarterly_report(paths, output_path):
         "periode": [m["label"] for m in months],
         "n_pegawai": roster_summary["n_pegawai"],
         "n_belum_dibayar_bulan_terakhir": roster_summary["n_belum_dibayar_bulan_terakhir"],
+        "n_aset_tetap": len(all_assets),
+        "n_aset_carry_forward": len(carried),
     }
 
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 5:
-        print("Usage: python quarterly.py bulan1.xlsx bulan2.xlsx bulan3.xlsx output.xlsx")
+        print("Usage: python quarterly.py bulan1.xlsx bulan2.xlsx bulan3.xlsx output.xlsx "
+              "[--carry-forward laporan_lama1.xlsx laporan_lama2.xlsx ...]")
         sys.exit(1)
     paths = sys.argv[1:4]
     out = sys.argv[4]
+    carry_forward = []
+    if "--carry-forward" in sys.argv:
+        idx = sys.argv.index("--carry-forward")
+        carry_forward = sys.argv[idx + 1:]
     try:
-        s = run_quarterly_report(paths, out)
+        s = run_quarterly_report(paths, out, carry_forward_paths=carry_forward)
         print(s)
     except QuarterlyInputError as e:
         print("Error:", e)
