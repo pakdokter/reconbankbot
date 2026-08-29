@@ -774,6 +774,7 @@ INCOME_CATEGORIES_EXPENSE = [
     "Belanja Operasional",
     "Belanja Konsumsi",
     "Reparasi",
+    "Belanja Assets",
 ]
 
 # Marketing dan Riset dan Pengembangan (RnD) digabung jadi satu baris -
