@@ -106,7 +106,7 @@ CATEGORY_OVERRIDE_RULES = [
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
     {"all": ["cashback", "qris"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["layanan"], "category": "Belanja Operasional", "sheet_contains": "jago"},
-    {"any": ["fb", "facebook", "meta ads"], "category": "Marketing & RnD", "sheet_contains": None},
+    {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
@@ -1396,6 +1396,34 @@ TRANSFER_CATEGORY_TEXTS = [
     "Transfer Lainnya",
     "Transaksi Internal",
 ]
+
+
+def _validate_category_override_targets():
+    """Cegah kelas bug yang pernah kejadian: kategori tujuan di
+    CATEGORY_OVERRIDE_RULES harus PERSIS salah satu string yang benar-benar
+    dicek rumus SUMIF/SUMIFS laporan keuangan (INCOME_CATEGORIES_EXPENSE/
+    REVENUE, MARKETING_RND_CATEGORY_TEXTS, BANK_FEE_CATEGORY_TEXTS,
+    OTHER_CATEGORIES, atau 'Modal & Setoran Pemilik') - BUKAN cuma label
+    baris yang enak dibaca (mis. 'Marketing & RnD' pernah kepakai padahal
+    yang benar-benar dicek SUMIF adalah 'Marketing' saja, uangnya jadi
+    tidak ketangkap di manapun dan bikin Neraca selisih diam-diam)."""
+    known = set(
+        INCOME_CATEGORIES_EXPENSE + INCOME_CATEGORIES_REVENUE +
+        MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS +
+        OTHER_CATEGORIES + ["Modal & Setoran Pemilik"]
+    )
+    for rule in CATEGORY_OVERRIDE_RULES:
+        target = rule["category"]
+        if target not in known:
+            raise AssertionError(
+                f"CATEGORY_OVERRIDE_RULES: kategori tujuan {target!r} bukan salah satu kategori "
+                "yang dikenali rumus SUMIF/SUMIFS laporan keuangan - uang yang di-override ke sini "
+                "tidak akan ketangkap di manapun. Perbaiki jadi salah satu dari: "
+                f"{sorted(known)}"
+            )
+
+
+_validate_category_override_targets()
 
 
 def sumif_multi_one_sheet(sheet, last_row, categories):
