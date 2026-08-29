@@ -176,6 +176,15 @@ def sum_modal(txns):
     return round(sum(t.nominal for t in txns if t.is_capital), 2)
 
 
+def sum_operasional(txns):
+    """Belanja Operasional + override listrik/vendor tertentu - konsisten
+    dengan Txn.is_operational_override di reconcile.py."""
+    return round(sum(
+        t.nominal for t in txns
+        if (t.kategori or "").strip().lower() == "belanja operasional" or t.is_operational_override
+    ), 2)
+
+
 # ---------------------------------------------------------------------------
 # Aset Tetap & Penyusutan - kapitalisasi "Belanja Assets" lalu disusutkan
 # garis lurus, bukan dibebankan penuh di bulan pembelian. Lihat catatan di
@@ -474,10 +483,16 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
         if cat.strip().lower() == ASSET_CATEGORY_TEXT:
             continue  # dikapitalisasi jadi Aset Tetap, bukan beban tunai penuh - lihat baris Beban Penyusutan
-        rc.write_pivot_data_row(
-            ws, r, cat, labels,
-            lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
-        )
+        if cat == "Belanja Operasional":
+            rc.write_pivot_data_row(
+                ws, r, cat, labels,
+                lambda label: sum_operasional(_txns_for_label(months, label)),
+            )
+        else:
+            rc.write_pivot_data_row(
+                ws, r, cat, labels,
+                lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
+            )
         exp_rows.append(r)
         r += 1
     rc.write_pivot_data_row(
@@ -1100,7 +1115,8 @@ def compute_month_summary(txns, depreciation=0.0):
     Rugi yang sesungguhnya, bukan basis kas penuh yang berbeda sendiri."""
     revenue = sum(sum_category(txns, c) for c in rc.INCOME_CATEGORIES_REVENUE)
     expense = sum(
-        sum_category(txns, c) for c in rc.INCOME_CATEGORIES_EXPENSE
+        (sum_operasional(txns) if c == "Belanja Operasional" else sum_category(txns, c))
+        for c in rc.INCOME_CATEGORIES_EXPENSE
         if c.strip().lower() != ASSET_CATEGORY_TEXT
     )
     expense += sum_category_multi(txns, rc.MARKETING_RND_CATEGORY_TEXTS)
@@ -1176,7 +1192,10 @@ def write_analysis_sheet(wb, months, assets, period_word="Kuartal"):
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
         if cat.strip().lower() == ASSET_CATEGORY_TEXT:
             continue
-        expense_vals.append(abs(sum_category(all_txns_quarter, cat)))
+        if cat == "Belanja Operasional":
+            expense_vals.append(abs(sum_operasional(all_txns_quarter)))
+        else:
+            expense_vals.append(abs(sum_category(all_txns_quarter, cat)))
     expense_vals.append(abs(sum_category_multi(all_txns_quarter, rc.MARKETING_RND_CATEGORY_TEXTS)))
     expense_vals.append(abs(sum_category_prefix(all_txns_quarter, "gaji")))
     expense_vals.append(abs(sum_category_multi(all_txns_quarter, rc.BANK_FEE_CATEGORY_TEXTS)))
