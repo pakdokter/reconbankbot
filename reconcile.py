@@ -174,14 +174,26 @@ class Txn:
 
     @property
     def is_operational_override(self):
-        """Transaksi yang kategorinya BUKAN 'Belanja Operasional' (atau
-        malah tertulis kategori transfer-like) tapi keterangan tambahan/
-        objek-nya memastikan itu memang pembelian operasional - listrik
-        (dibayar via mekanisme non-tunai) atau vendor tertentu yang
-        dikenal (mis. Yulia Indah Pratiwi = Anugerah Plastik, meski
-        kategori tertulis 'Transfer Masuk')."""
-        if (self.kategori or "").strip().lower() == "belanja operasional":
+        """Transaksi yang kategorinya AMBIGU (transfer-like, mis.
+        'Transaksi Internal', atau 'Transfer Masuk' yang generik) tapi
+        keterangan tambahan/objek-nya memastikan itu memang pembelian
+        operasional - listrik (dibayar via mekanisme non-tunai) atau
+        vendor tertentu yang dikenal (mis. Yulia Indah Pratiwi = Anugerah
+        Plastik).
+
+        SENGAJA dibatasi hanya untuk kategori ambigu di atas - kalau
+        Kategori-nya SUDAH kategori valid lain (mis. 'Belanja Bahan'),
+        override ini TIDAK berlaku walau Objek/Keterangan kebetulan
+        menyebut kata kunci yang sama (mis. nama vendor yang sama dipakai
+        juga untuk pembelian kategori lain) - supaya tidak dobel hitung
+        transaksi yang sebenarnya sudah benar tercatat di kategori lain.
+        """
+        k = (self.kategori or "").strip().lower()
+        if k == "belanja operasional":
             return False  # sudah kehitung normal via kategori, jangan dobel
+        is_ambiguous = any(kw in k for kw in TRANSFER_KEYWORDS) or k == "transfer masuk"
+        if not is_ambiguous:
+            return False  # kategori aslinya sudah valid/dikenal lain, jangan disentuh
         text = f"{self.ket or ''} {self.objek or ''}".lower()
         if any(kw in text for kw in UTILITY_EXPENSE_KEYWORDS):
             return True
@@ -603,6 +615,85 @@ TIP_MINUS_THRESHOLD = 100000  # Tip/Minus/Lebih di bawah ini dianggap wajar,
                                 # tidak perlu verifikasi manual
 
 
+def compute_balance_status(all_txns_by_sheet):
+    """Hitung ulang di Python (bukan tunggu Excel/LibreOffice recalculate
+    rumus Neraca) apakah tiap rekening bakal balanced atau masih ada
+    selisih - dipakai untuk menulis status ini LANGSUNG ke sheet
+    Rekonsiliasi supaya user tidak perlu buka sheet Neraca terpisah untuk
+    tahu ada masalah atau tidak; begitu laporan digenerate, statusnya
+    sudah kelihatan di satu tempat. Mirror persis logika Excel formula di
+    write_income_statement/write_balance_sheet (basis kas penuh, TIDAK
+    ada penyusutan Aset Tetap - beda dengan quarterly.py/annual.py yang
+    mengkapitalisasi 'Belanja Assets')."""
+    def sum_exact(txns, category):
+        cat = category.strip().lower()
+        return sum(t.nominal for t in txns if (t.kategori or "").strip().lower() == cat)
+
+    def sum_multi(txns, categories):
+        cats = {c.strip().lower() for c in categories}
+        return sum(t.nominal for t in txns if (t.kategori or "").strip().lower() in cats)
+
+    def sum_gaji(txns):
+        return sum(t.nominal for t in txns if (t.kategori or "").strip().lower().startswith("gaji"))
+
+    def sum_operasional(txns):
+        return sum(
+            t.nominal for t in txns
+            if (t.kategori or "").strip().lower() == "belanja operasional" or t.is_operational_override
+        )
+
+    def sum_tip_minus(txns):
+        return sum(t.nominal for t in txns if t.is_tip_minus_variant)
+
+    def sum_modal(txns):
+        return sum(t.nominal for t in txns if t.is_capital)
+
+    results = {}
+    for sheet, txns in all_txns_by_sheet.items():
+        if not txns:
+            continue
+        # rekonstruksi K persis seperti rumus Excel (K2=F2, K(n)=K(n-1)+J(n))
+        opening_f = txns[0].saldo if isinstance(txns[0].saldo, (int, float)) else (txns[0].nominal or 0)
+        k_values = [opening_f]
+        for t in txns[1:]:
+            k_values.append(k_values[-1] + t.nominal)
+        total_aset = k_values[-1]
+
+        # "Saldo Awal Bulan" di Neraca MERUJUK ke K pada baris yang eksplisit
+        # bertanda is_opening (bisa jadi BUKAN baris pertama - lihat kasus
+        # nyata: sheet dengan transaksi biasa tercatat sebelum baris "Saldo
+        # Awal"-nya sendiri) - kalau langsung pakai txns[0].saldo mentah
+        # tanpa rekonstruksi, hasilnya bisa beda dari yang sungguhan dipakai
+        # rumus Excel, dan prediksi Selisih ini jadi tidak akurat.
+        opening_idx = next((i for i, t in enumerate(txns) if t.is_opening), 0)
+        saldo_awal = k_values[opening_idx]
+
+        revenue = sum_multi(txns, INCOME_CATEGORIES_REVENUE)
+        expense = sum(
+            sum_operasional(txns) if cat == "Belanja Operasional" else sum_exact(txns, cat)
+            for cat in INCOME_CATEGORIES_EXPENSE
+        )
+        expense += sum_multi(txns, MARKETING_RND_CATEGORY_TEXTS)
+        expense += sum_gaji(txns)
+        expense += sum_multi(txns, BANK_FEE_CATEGORY_TEXTS)
+        other = sum(
+            sum_tip_minus(txns) if cat == "Tip/Minus/Lebih" else sum_exact(txns, cat)
+            for cat in OTHER_CATEGORIES
+        )
+        laba_bersih = revenue + expense + other
+        modal = sum_modal(txns)
+        ekuitas = saldo_awal + modal + laba_bersih
+        transfer_bersih = sum_multi(txns, TRANSFER_CATEGORY_TEXTS)
+        selisih = round((total_aset - ekuitas) - transfer_bersih, 2)
+        results[sheet] = {
+            "total_aset": round(total_aset, 2),
+            "ekuitas": round(ekuitas, 2),
+            "transfer_bersih": round(transfer_bersih, 2),
+            "selisih": selisih,
+        }
+    return results
+
+
 def find_minus_flags(all_txns_by_sheet):
     """Kumpulkan indikasi 'minus' yang perlu verifikasi manual: kategori
     Tip/Minus/Lebih dengan nominal > Rp100.000, atau baris berpenanda flag
@@ -658,7 +749,7 @@ def conf_fill(conf):
     return {"High": HIGH_FILL, "Medium": MED_FILL, "Low": LOW_FILL}.get(conf, LOW_FILL)
 
 
-def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
+def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None):
     if "Rekonsiliasi" in wb.sheetnames:
         del wb["Rekonsiliasi"]
     ws = wb.create_sheet("Rekonsiliasi")
@@ -821,6 +912,62 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags):
             cell.border = BORDER
             cell.alignment = Alignment(vertical="top", wrap_text=(c == 6))
         ws.cell(row=r, column=6).fill = LOW_FILL
+        r += 1
+
+    r += 1
+    # --- Bagian 3: status keseimbangan Neraca (dihitung Python, prediksi
+    # sebelum file dibuka/di-recalculate Excel) - supaya begitu laporan
+    # digenerate, status "sudah selesai/masih ada selisih" langsung
+    # kelihatan di sini tanpa perlu buka sheet Neraca terpisah ---
+    ws.cell(row=r, column=1, value="3. STATUS KESEIMBANGAN NERACA")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    if balance_status:
+        headers3 = ["Rekening", "Total Aset", "Total Ekuitas", "Transfer Bersih", "Selisih", "Status"]
+        hdr_row3 = r
+        for i, h in enumerate(headers3, start=1):
+            ws.cell(row=hdr_row3, column=i, value=h)
+        style_header(ws, hdr_row3, len(headers3))
+        r += 1
+        any_selisih = False
+        total_selisih = 0.0
+        for sheet, s in balance_status.items():
+            balanced = abs(s["selisih"]) < 1  # toleransi Rp1 (noise pembulatan)
+            if not balanced:
+                any_selisih = True
+            total_selisih += s["selisih"]
+            ws.cell(row=r, column=1, value=sheet)
+            ws.cell(row=r, column=2, value=s["total_aset"])
+            ws.cell(row=r, column=3, value=s["ekuitas"])
+            ws.cell(row=r, column=4, value=s["transfer_bersih"])
+            ws.cell(row=r, column=5, value=s["selisih"])
+            ws.cell(row=r, column=6, value="Balanced" if balanced else f"ADA SELISIH Rp{abs(s['selisih']):,.0f}".replace(",", "."))
+            for c in (2, 3, 4, 5):
+                ws.cell(row=r, column=c).number_format = NUMBER_FORMAT
+            for c in range(1, len(headers3) + 1):
+                ws.cell(row=r, column=c).border = BORDER
+            ws.cell(row=r, column=6).fill = HIGH_FILL if balanced else LOW_FILL
+            ws.cell(row=r, column=6).font = Font(bold=True)
+            r += 1
+        r += 1
+        if any_selisih:
+            ws.cell(row=r, column=1,
+                    value=(f"BELUM SELESAI: masih ada selisih total Rp{abs(total_selisih):,.0f} yang belum "
+                           "terjelaskan (lihat kolom Selisih per rekening di atas). Cek kembali bagian 1 & 2 "
+                           "di atas dan sheet rekening masing-masing (kolom L) sebelum laporan ini dianggap final."
+                           .replace(",", ".")))
+            ws.cell(row=r, column=1).font = Font(bold=True, color="B91C1C")
+        else:
+            ws.cell(row=r, column=1, value="SELESAI: semua rekening balanced, tidak ada selisih yang perlu ditelusuri lebih lanjut.")
+            ws.cell(row=r, column=1).font = Font(bold=True, color="15803D")
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=len(headers3))
+        ws.row_dimensions[r].height = 28
+        r += 1
+    else:
+        ws.cell(row=r, column=1, value="(status keseimbangan tidak dihitung)")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
         r += 1
 
     widths = [22, 12, 26, 14, 22, 12, 26, 14, 10, 14, 14, 40, 12, 22, 20]
@@ -1082,21 +1229,32 @@ def sumif_tip_minus_one_sheet(sheet, last_row):
 
 
 def sumif_operasional_one_sheet(sheet, last_row):
-    """Belanja Operasional + dua override yang keterangan tambahannya
-    (kolom I) memastikan itu memang pembelian operasional walau
-    kategorinya bukan/salah 'Belanja Operasional': (1) menyebut 'listrik'
-    (pembelian listrik, kadang dibayar via mekanisme non-tunai spt
-    Fliptech dan tertulis kategori transfer-like), dan (2) vendor
-    tertentu yang dikenal (Yulia Indah Pratiwi = toko Anugerah Plastik) -
-    lihat UTILITY_EXPENSE_KEYWORDS dan VENDOR_EXPENSE_KEYWORDS."""
+    """Belanja Operasional + dua override yang SENGAJA dibatasi hanya
+    untuk kategori AMBIGU (mengandung 'internal' atau 'transfer', mis.
+    'Transaksi Internal'/'Transfer Masuk') dengan Objek/Keterangan
+    Tambahan yang memastikan itu memang pembelian operasional: (1)
+    menyebut 'listrik' (kadang dibayar via mekanisme non-tunai spt
+    Fliptech), dan (2) vendor tertentu yang dikenal (Yulia Indah Pratiwi
+    = toko Anugerah Plastik). TIDAK berlaku untuk kategori yang sudah
+    valid lain (mis. 'Belanja Bahan') walau kebetulan Objek/Keterangannya
+    menyebut kata kunci yang sama - supaya tidak dobel hitung. Pakai
+    SUMPRODUCT (satu kondisi boolean gabungan per baris) sesuai
+    Txn.is_operational_override, bukan beberapa SUMIFS ditambah, supaya
+    baris yang cocok di kedua kolom (Objek DAN Keterangan) tetap cuma
+    terhitung sekali."""
     rng_c = f"'{sheet}'!$C$2:$C${last_row}"
+    rng_h = f"'{sheet}'!$H$2:$H${last_row}"
     rng_i = f"'{sheet}'!$I$2:$I${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
+    keyword_terms = []
+    for kw in ["listrik", "yulia indah pratiw", "anugerah plastik"]:
+        keyword_terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_i}))")
+        keyword_terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_h}))")
+    ambiguous_cat = f"(ISNUMBER(SEARCH(\"internal\",{rng_c}))+ISNUMBER(SEARCH(\"transfer\",{rng_c}))>0)"
+    keyword_hit = f"({'+'.join(keyword_terms)}>0)"
     return (
         f"=SUMIF({rng_c},\"Belanja Operasional\",{rng_j})"
-        f"+SUMIFS({rng_j},{rng_c},\"<>Belanja Operasional\",{rng_i},\"*listrik*\")"
-        f"+SUMIFS({rng_j},{rng_c},\"<>Belanja Operasional\",{rng_i},\"*yulia indah pratiw*\")"
-        f"+SUMIFS({rng_j},{rng_c},\"<>Belanja Operasional\",{rng_i},\"*anugerah plastik*\")"
+        f"+SUMPRODUCT(({keyword_hit})*{ambiguous_cat}*{rng_j})"
     )
 
 
@@ -1705,6 +1863,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
 
     matches, combo_matches = find_matches(all_txns, account_sheets)
     minus_flags = find_minus_flags(all_txns_by_sheet)
+    balance_status = compute_balance_status(all_txns_by_sheet)
 
     # transaksi yang sudah terjelaskan lewat split/merge tidak perlu lagi
     # tampil sebagai "Needs manual verification" biasa di bagian 1
@@ -1718,7 +1877,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         if m.dst is not None or id(m.src) not in combo_covered_ids
     ]
 
-    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags)
+    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status)
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
@@ -1748,7 +1907,8 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     n_transfer_not_applicable = sum(
         1 for m in matches_section1 if m.confidence == "Not applicable (bukan transfer internal)"
     )
-    no_issues = n_transfer_unmatched == 0 and len(minus_flags) == 0
+    n_balance_issues = sum(1 for s in balance_status.values() if abs(s["selisih"]) >= 1)
+    no_issues = n_transfer_unmatched == 0 and len(minus_flags) == 0 and n_balance_issues == 0
 
     summary = {
         "n_transfer_high": sum(1 for m in matches if m.confidence == "High"),
@@ -1758,6 +1918,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         "n_transfer_unmatched": n_transfer_unmatched,
         "n_transfer_not_applicable": n_transfer_not_applicable,
         "n_minus_flags": len(minus_flags),
+        "n_balance_issues": n_balance_issues,
         "with_statements": with_statements,
         "period_label": period_label,
         "no_issues": no_issues,
