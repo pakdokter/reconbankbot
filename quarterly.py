@@ -1085,7 +1085,7 @@ def _norm_name(name):
 # dirapikan (bukan cuma exact match) - supaya kasus seperti "Roziyan Hidayat
 # Mei (Sisanya Di Tunai)" (ada catatan tambahan nempel di nama) tetap
 # kecocokan ke alias "roziyan hidayat".
-EMPLOYEE_ALIASES = {
+_DEFAULT_EMPLOYEE_ALIASES = {
     "viona winda octavia": "Viona Winda Octavia",
     "viona": "Viona Winda Octavia",
     "ahmad roziyan hidayat": "Ahmad Roziyan Hidayat",
@@ -1104,6 +1104,7 @@ EMPLOYEE_ALIASES = {
     "ismayanti": "Ismayanti",
     "maya": "Ismayanti",
 }
+EMPLOYEE_ALIASES = rc.shared_rules.get("employee_aliases", _DEFAULT_EMPLOYEE_ALIASES)
 _EMPLOYEE_ALIAS_KEYS_SORTED = sorted(EMPLOYEE_ALIASES.keys(), key=len, reverse=True)
 
 
