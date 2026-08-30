@@ -48,8 +48,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from telegram.error import Conflict, NetworkError
 
 from reconcile import run_reconciliation
+import reconcile as rc
 from quarterly import run_quarterly_report, QuarterlyInputError
 from annual import run_annual_report, AnnualInputError
+import shared_rules
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -436,6 +438,136 @@ async def _process_multi_report(update: Update, context: ContextTypes.DEFAULT_TY
     shutil.rmtree(user_dir, ignore_errors=True)
 
 
+_VALID_CATEGORIES = set(
+    rc.INCOME_CATEGORIES_EXPENSE + rc.INCOME_CATEGORIES_REVENUE +
+    rc.MARKETING_RND_CATEGORY_TEXTS + rc.BANK_FEE_CATEGORY_TEXTS +
+    rc.OTHER_CATEGORIES + rc.TRANSFER_CATEGORY_TEXTS + ["Modal & Setoran Pemilik"]
+)
+
+
+async def tambahkategori_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Format: /tambahkategori kata1, kata2 => Kategori Tujuan
+    Opsional tambahkan " | sheet:nama" di akhir untuk batasi ke sheet
+    tertentu (mis. cuma berlaku di rekening Jago)."""
+    text = " ".join(context.args)
+    if "=>" not in text:
+        await update.message.reply_text(
+            "Format: /tambahkategori kata1, kata2 => Kategori Tujuan\n"
+            "Contoh: /tambahkategori dana bos, dana bantuan => Penjualan\n"
+            "Opsional batasi ke satu rekening: tambahkan | sheet:jago di akhir\n\n"
+            f"Kategori yang dikenal: {', '.join(sorted(_VALID_CATEGORIES))}"
+        )
+        return
+    left, category = text.split("=>", 1)
+    sheet_contains = None
+    if "|" in category:
+        category, modifier = category.split("|", 1)
+        modifier = modifier.strip()
+        if modifier.lower().startswith("sheet:"):
+            sheet_contains = modifier.split(":", 1)[1].strip().lower()
+    category = category.strip()
+    keywords = [k.strip().lower() for k in left.split(",") if k.strip()]
+    if not keywords:
+        await update.message.reply_text("Tidak ada kata kunci yang diberikan.")
+        return
+    try:
+        rule = shared_rules.add_category_rule(keywords, category, _VALID_CATEGORIES, sheet_contains)
+    except ValueError as e:
+        await update.message.reply_text(f"Gagal: {e}")
+        return
+    except Exception as e:
+        logger.error("Gagal tulis ke shared_rules", exc_info=e)
+        await update.message.reply_text(
+            "Gagal terhubung ke database bersama. Cek DATABASE_URL sudah diset dan tabel shared_rules sudah dibuat."
+        )
+        return
+    sheet_note = f" (khusus rekening mengandung '{sheet_contains}')" if sheet_contains else ""
+    await update.message.reply_text(
+        f"Tersimpan: kata kunci {rule['any']} -> kategori '{category}'{sheet_note}.\n"
+        "Berlaku untuk reconbot, bank-statement-bot, dan bot lain yang baca shared_rules yang sama."
+    )
+
+
+async def tambahalias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Format: /tambahalias nama_pendek => Nama Lengkap"""
+    text = " ".join(context.args)
+    if "=>" not in text:
+        await update.message.reply_text(
+            "Format: /tambahalias nama_pendek => Nama Lengkap\n"
+            "Contoh: /tambahalias budi => Budi Santoso"
+        )
+        return
+    short_name, full_name = text.split("=>", 1)
+    short_name, full_name = short_name.strip(), full_name.strip()
+    if not short_name or not full_name:
+        await update.message.reply_text("Nama pendek dan nama lengkap harus diisi.")
+        return
+    try:
+        shared_rules.add_employee_alias(short_name, full_name)
+    except Exception as e:
+        logger.error("Gagal tulis ke shared_rules", exc_info=e)
+        await update.message.reply_text(
+            "Gagal terhubung ke database bersama. Cek DATABASE_URL sudah diset dan tabel shared_rules sudah dibuat."
+        )
+        return
+    await update.message.reply_text(f"Tersimpan: '{short_name}' -> '{full_name}'.")
+
+
+async def lihataturan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        rules = shared_rules.list_category_rules()
+    except Exception as e:
+        logger.error("Gagal baca shared_rules", exc_info=e)
+        await update.message.reply_text("Gagal terhubung ke database bersama.")
+        return
+    if not rules:
+        await update.message.reply_text("Belum ada aturan kategori tersimpan.")
+        return
+    lines = ["Aturan kategori saat ini (urutan = prioritas, yang duluan menang):"]
+    for i, r in enumerate(rules):
+        kw = r.get("any") or r.get("all") or []
+        joiner = " ATAU " if "any" in r else " DAN "
+        sheet = f" [khusus: {r['sheet_contains']}]" if r.get("sheet_contains") else ""
+        lines.append(f"{i}. {joiner.join(kw)} -> {r.get('category')}{sheet}")
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3500):
+        await update.message.reply_text(text[i:i + 3500])
+
+
+async def lihatalias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        aliases = shared_rules.list_employee_aliases()
+    except Exception as e:
+        logger.error("Gagal baca shared_rules", exc_info=e)
+        await update.message.reply_text("Gagal terhubung ke database bersama.")
+        return
+    if not aliases:
+        await update.message.reply_text("Belum ada alias pegawai tersimpan.")
+        return
+    lines = ["Alias pegawai saat ini:"] + [f"'{k}' -> '{v}'" for k, v in aliases.items()]
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3500):
+        await update.message.reply_text(text[i:i + 3500])
+
+
+async def hapusaturan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Format: /hapusaturan <index> - index dilihat dari /lihataturan."""
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Format: /hapusaturan <index> (lihat index lewat /lihataturan)")
+        return
+    idx = int(context.args[0])
+    try:
+        removed = shared_rules.remove_category_rule(idx)
+    except IndexError as e:
+        await update.message.reply_text(f"Gagal: {e}")
+        return
+    except Exception as e:
+        logger.error("Gagal tulis ke shared_rules", exc_info=e)
+        await update.message.reply_text("Gagal terhubung ke database bersama.")
+        return
+    await update.message.reply_text(f"Dihapus: {removed}")
+
+
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     """Handler error global - PTB akan spam traceback mentah ke log kalau
     tidak ada ini terdaftar. Conflict (dua instance bot rebutan getUpdates,
@@ -466,6 +598,11 @@ def main():
     app.add_handler(CommandHandler("tahunan", tahunan_command))
     app.add_handler(CommandHandler("selesai", selesai_command))
     app.add_handler(CommandHandler("batal", batal_command))
+    app.add_handler(CommandHandler("tambahkategori", tambahkategori_command))
+    app.add_handler(CommandHandler("tambahalias", tambahalias_command))
+    app.add_handler(CommandHandler("lihataturan", lihataturan_command))
+    app.add_handler(CommandHandler("lihatalias", lihatalias_command))
+    app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(error_handler)
     logger.info("Bot rekonsiliasi jalan...")
