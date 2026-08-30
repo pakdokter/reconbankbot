@@ -328,6 +328,125 @@ def load_asset_ledger(path):
     return assets
 
 
+def load_hutang_ledger(path):
+    """Baca sheet 'Buku Hutang' dari file laporan kuartalan/tahunan
+    SEBELUMNYA (kalau ada) - dipakai untuk menyambung catatan hutang yang
+    masih berjalan (belum lunas) ke laporan baru. INI BUKU MANUAL, beda
+    dengan Buku Aset Tetap yang nilainya dihitung otomatis (penyusutan) -
+    Buku Hutang murni menyalin apa yang sudah user isi sebelumnya (Total
+    Sudah Dibayar, Status, dst), supaya tidak perlu diketik ulang dari nol
+    tiap bikin laporan baru. Return list kosong kalau sheet itu tidak ada."""
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception:
+        return []
+    name = "Buku Hutang"
+    if name not in wb.sheetnames:
+        return []
+    ws = wb[name]
+    entries = []
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+        if not row or all(v is None for v in row):
+            continue
+        # lewati baris subjudul/header (bukan data) - baris data hutang
+        # sungguhan HARUS punya Nilai Pinjaman berupa angka
+        nilai_pinjaman = row[2] if len(row) > 2 else None
+        if not isinstance(nilai_pinjaman, (int, float)):
+            continue
+        entries.append({
+            "tanggal_pinjam": row[0] if len(row) > 0 else None,
+            "deskripsi": row[1] if len(row) > 1 else None,
+            "nilai_pinjaman": row[2] if len(row) > 2 else None,
+            "nilai_diterima": row[3] if len(row) > 3 else None,
+            "biaya_potongan": row[4] if len(row) > 4 else None,
+            "total_dibayar": row[5] if len(row) > 5 else None,
+            "sisa_hutang": row[6] if len(row) > 6 else None,
+            "status": row[7] if len(row) > 7 else None,
+            "catatan": row[8] if len(row) > 8 else None,
+        })
+    return entries
+
+
+def write_buku_hutang(wb, hutang_entries):
+    """Sheet 'Buku Hutang' - BUKU MANUAL (bukan dihitung otomatis dari
+    transaksi, karena tidak ada kategori baku 'hutang masuk' yang bisa
+    dideteksi seperti Belanja Assets untuk Aset Tetap). User isi/update
+    sendiri kolom Total Sudah Dibayar/Status tiap kali ada pembayaran
+    cicilan, TERMASUK yang terjadi di luar periode laporan ini (mis.
+    hutang dari kuartal ini, dicicil bulan-bulan sesudahnya). Sheet ini
+    dibaca balik oleh load_hutang_ledger() kalau file ini dipakai sebagai
+    carry-forward untuk laporan berikutnya, supaya tidak perlu diisi
+    ulang dari nol - entri yang sudah ada disalin apa adanya, tinggal
+    user lanjutkan mengisi/update baris yang relevan."""
+    name = "Buku Hutang"
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+
+    ws["A1"] = "BUKU HUTANG (INDUK) - UNTUK DIISI MANUAL & KONTINUITAS ANTAR LAPORAN"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = ("Isi/update sendiri kolom Total Sudah Dibayar, Sisa Hutang, dan Status tiap kali ada "
+                "pembayaran cicilan - termasuk cicilan yang terjadi DI LUAR periode laporan ini (laporan "
+                "ini tidak bisa mendeteksi otomatis, beda dengan Buku Aset Tetap). Kalau file ini dipakai "
+                "sebagai carry-forward untuk laporan kuartal/tahun berikutnya, semua baris di sini akan "
+                "otomatis tersalin ke laporan baru - tinggal lanjutkan mengisi dari situ, tidak perlu "
+                "ketik ulang dari nol.")
+    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
+
+    r = 4
+    headers = ["Tanggal Pinjam", "Deskripsi / Pemberi Pinjaman", "Nilai Pinjaman (Hutang)",
+               "Nilai Diterima (Kas Masuk)", "Biaya / Potongan", "Total Sudah Dibayar",
+               "Sisa Hutang", "Status", "Catatan"]
+    hdr_row = r
+    for i, h in enumerate(headers, start=1):
+        ws.cell(row=hdr_row, column=i, value=h)
+    rc.style_header(ws, hdr_row, len(headers))
+    r += 1
+
+    for e in hutang_entries:
+        ws.cell(row=r, column=1, value=e.get("tanggal_pinjam"))
+        ws.cell(row=r, column=2, value=e.get("deskripsi"))
+        ws.cell(row=r, column=3, value=e.get("nilai_pinjaman"))
+        ws.cell(row=r, column=4, value=e.get("nilai_diterima"))
+        ws.cell(row=r, column=5, value=e.get("biaya_potongan"))
+        ws.cell(row=r, column=6, value=e.get("total_dibayar"))
+        ws.cell(row=r, column=7, value=e.get("sisa_hutang"))
+        ws.cell(row=r, column=8, value=e.get("status"))
+        ws.cell(row=r, column=9, value=e.get("catatan"))
+        for c in (3, 4, 5, 6, 7):
+            ws.cell(row=r, column=c).number_format = rc.NUMBER_FORMAT
+        for c in range(1, len(headers) + 1):
+            ws.cell(row=r, column=c).border = rc.BORDER
+        r += 1
+
+    if not hutang_entries:
+        ws.cell(row=r, column=1, value="(belum ada catatan hutang - isi manual baris di bawah header kalau ada)")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 30
+    for col in "CDEFG":
+        ws.column_dimensions[col].width = 20
+    ws.column_dimensions["H"].width = 16
+    ws.column_dimensions["I"].width = 40
+    ws.freeze_panes = "A5"
+    return ws
+
+
+def merge_hutang_lists(*entry_lists):
+    """Gabung beberapa daftar hutang (mis. dari beberapa file carry-forward
+    sekaligus), dedup berdasarkan (tanggal_pinjam, deskripsi, nilai_pinjaman).
+    Kalau kunci sama muncul di lebih dari satu daftar, yang dipakai adalah
+    yang pertama ditemukan (urutan argumen menentukan prioritas)."""
+    merged = {}
+    for lst in entry_lists:
+        for e in lst:
+            key = (str(e.get("tanggal_pinjam")), str(e.get("deskripsi")), str(e.get("nilai_pinjaman")))
+            if key not in merged:
+                merged[key] = e
+    return list(merged.values())
+
+
 def write_buku_aset_tetap(wb, assets, months):
     """Sheet 'Buku Aset Tetap' - daftar LENGKAP semua aset yang diketahui
     (dari laporan ini + yang di-carry-forward dari laporan sebelumnya),
@@ -1508,14 +1627,17 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     months = validate_consecutive(months)
 
     carried = []
+    carried_hutang = []
     previous_closing = None
     for p in (carry_forward_paths or []):
         carried.extend(load_asset_ledger(p))
+        carried_hutang.extend(load_hutang_ledger(p))
         if previous_closing is None:
             previous_closing = load_previous_period_closing(p)
     scanned = scan_assets_from_months(months)
     all_assets = merge_asset_lists(carried, scanned)
     rel_assets = assets_with_relative_idx(all_assets, months)
+    all_hutang = merge_hutang_lists(carried_hutang)
 
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
@@ -1526,9 +1648,10 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     roster_summary = write_roster_gaji(out_wb, months)
     write_analysis_sheet(out_wb, months, rel_assets)
     write_buku_aset_tetap(out_wb, all_assets, months)
+    write_buku_hutang(out_wb, all_hutang)
 
     order = ["Laba Rugi Kuartal", "Neraca Kuartal", "Arus Kas Kuartal",
-             "Roster Gaji 3 Bulan", "Analisis & Tren", "Buku Aset Tetap"]
+             "Roster Gaji 3 Bulan", "Analisis & Tren", "Buku Aset Tetap", "Buku Hutang"]
     out_wb._sheets = [out_wb[s] for s in order]
 
     out_wb.save(output_path)
@@ -1539,6 +1662,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
         "n_belum_dibayar_bulan_terakhir": roster_summary["n_belum_dibayar_bulan_terakhir"],
         "n_aset_tetap": len(all_assets),
         "n_aset_carry_forward": len(carried),
+        "n_hutang": len(all_hutang),
     }
 
 
