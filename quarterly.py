@@ -1611,6 +1611,14 @@ def build_narasi_tren(labels, revenues, expenses, nets, kas, expense_cats, expen
 # Orkestrasi utama
 # ---------------------------------------------------------------------------
 
+def reload_shared_rules():
+    global EMPLOYEE_ALIASES, _EMPLOYEE_ALIAS_KEYS_SORTED
+    rc.reload_shared_rules()
+    rc.shared_rules._cache = None
+    EMPLOYEE_ALIASES = rc.shared_rules.get("employee_aliases", _DEFAULT_EMPLOYEE_ALIASES)
+    _EMPLOYEE_ALIAS_KEYS_SORTED = sorted(EMPLOYEE_ALIASES.keys(), key=len, reverse=True)
+
+
 def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     """paths: list of 3 path file bulanan (urutan upload bebas, akan
     disortir kronologis). carry_forward_paths: list path laporan kuartalan/
@@ -1624,6 +1632,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     disambung). Return dict ringkasan. Output 6 sheet: Laba Rugi Kuartal,
     Neraca Kuartal, Arus Kas Kuartal, Roster Gaji 3 Bulan, Analisis & Tren,
     Buku Aset Tetap - tidak ada sheet rekening mentah."""
+    reload_shared_rules()
     months = [load_month(p) for p in paths]
     months = validate_consecutive(months)
 
