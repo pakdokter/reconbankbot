@@ -103,10 +103,21 @@ TIP_MINUS_KEYWORDS = ["minus", "lebih", "cust", "tip"]
 # (tidak harus berdekatan). "sheet_contains": opsional, cuma berlaku
 # kalau nama sheet mengandung teks ini (case-insensitive).
 CATEGORY_OVERRIDE_RULES = [
+    # Aturan spesifik (nominal/kombinasi kata kunci) diletakkan SEBELUM
+    # aturan umum yang lebih longgar, karena yang pertama cocok menang -
+    # mis. "Tokopedia dekat Rp1jt via BRIVA" harus dicek dulu sebelum
+    # aturan umum "Tokopedia" supaya tidak keburu ketangkap sebagai
+    # Belanja Bahan biasa.
+    {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
+     "category": "Belanja Operasional", "sheet_contains": None},  # pembelian token listrik via Tokopedia
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
     {"all": ["cashback", "qris"], "category": "Biaya Admin Bank", "sheet_contains": None},
+    {"any": ["cashback mdr"], "category": "Biaya Admin Bank", "sheet_contains": None},
+    {"any": ["cashback jago"], "category": "Biaya Admin Bank", "sheet_contains": "jago"},
+    {"any": ["dr koreksi bunga"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["layanan"], "category": "Belanja Operasional", "sheet_contains": "jago"},
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
+    {"any": ["sponsorship"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
@@ -125,6 +136,22 @@ _PROTECTED_FROM_CATEGORY_OVERRIDE = {
 
 def _override_keyword_found(pattern, text):
     return re.search(r"\b" + re.escape(pattern) + r"\b", text) is not None
+
+
+# Sebagian bank menulis Keterangan Transaksi sebagai KODE ANGKA PANJANG
+# (mis. nomor rekening pengirim diulang) alih-alih teks deskriptif -
+# kadang malah rusak jadi notasi ilmiah kalau kolomnya kebetulan
+# terbaca sebagai angka oleh Excel/software lain (mis. "1.57e+33").
+# User menegaskan pola ini = transfer internal MASUK (kredit).
+_LONG_NUMERIC_KETERANGAN_RE = re.compile(r"^\d{10,}$")
+_SCI_NOTATION_KETERANGAN_RE = re.compile(r"^\d(\.\d+)?e\+?\d+$", re.IGNORECASE)
+
+
+def _looks_like_long_numeric_code(desc):
+    text = str(desc if desc is not None else "").strip()
+    if not text:
+        return False
+    return bool(_LONG_NUMERIC_KETERANGAN_RE.match(text)) or bool(_SCI_NOTATION_KETERANGAN_RE.match(text))
 
 
 # Kategori saldo awal -> dipakai untuk saldo awal Neraca, dilewati saat
@@ -190,18 +217,26 @@ class Txn:
     @property
     def category_override(self):
         """Kategori pengganti berdasarkan CATEGORY_OVERRIDE_RULES (kata
-        kunci di Keterangan/Keterangan Tambahan/Objek, ditegaskan user
-        berdasarkan pengalaman nyata bisnisnya) - None kalau tidak ada
-        aturan yang cocok atau kategori aslinya sudah deliberate/tegas
+        kunci di Keterangan/Keterangan Tambahan/Objek/Subjek, ditegaskan
+        user berdasarkan pengalaman nyata bisnisnya) - None kalau tidak
+        ada aturan yang cocok atau kategori aslinya sudah deliberate/tegas
         (modal, laba ditahan, saldo awal, gaji - lihat
         _PROTECTED_FROM_CATEGORY_OVERRIDE) dan tidak boleh ditimpa."""
         k = (self.kategori or "").strip().lower()
         if k in _PROTECTED_FROM_CATEGORY_OVERRIDE or k.startswith("gaji"):
             return None
-        text = f"{self.desc or ''} {self.ket or ''} {self.objek or ''}".lower()
+        if self.nominal > 0 and _looks_like_long_numeric_code(self.desc):
+            return "Transaksi Internal"
+        text = f"{self.desc or ''} {self.ket or ''} {self.objek or ''} {self.subjek or ''}".lower()
         for rule in CATEGORY_OVERRIDE_RULES:
             sheet_filter = rule.get("sheet_contains")
             if sheet_filter and sheet_filter not in (self.sheet or "").lower():
+                continue
+            amount_min = rule.get("amount_min")
+            amount_max = rule.get("amount_max")
+            if amount_min is not None and abs(self.nominal) < amount_min:
+                continue
+            if amount_max is not None and abs(self.nominal) > amount_max:
                 continue
             if "any" in rule and not any(_override_keyword_found(kw, text) for kw in rule["any"]):
                 continue
@@ -305,14 +340,21 @@ def read_account_sheet(ws):
                 sheet=ws.title,
                 row=row[0].row,
                 date=tanggal,
-                desc=ket or "",
-                kategori=kategori or "",
+                # Semua kolom teks di-str()-kan eksplisit - beberapa file
+                # sumber (mis. Numbers/Excel yang salah menebak tipe sel)
+                # kadang menyimpan kolom teks (Keterangan dst) sebagai
+                # ANGKA MENTAH (bahkan notasi ilmiah kalau angkanya sangat
+                # panjang, mis. nomor rekening yang diulang di Keterangan)
+                # - tanpa str() eksplisit, downstream code yang
+                # mengasumsikan string (mis. .lower()) akan crash.
+                desc=str(ket) if ket is not None else "",
+                kategori=str(kategori) if kategori is not None else "",
                 debit=float(debit) if isinstance(debit, (int, float)) else 0,
                 kredit=float(kredit) if isinstance(kredit, (int, float)) else 0,
                 saldo=float(saldo) if isinstance(saldo, (int, float)) else None,
                 subjek=str(subjek) if subjek is not None else "",
                 objek=str(objek) if objek is not None else "",
-                ket=ket_tambahan or "",
+                ket=str(ket_tambahan) if ket_tambahan is not None else "",
             )
         )
     return txns, closing_info
