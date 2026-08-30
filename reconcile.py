@@ -120,6 +120,8 @@ CATEGORY_OVERRIDE_RULES = [
     {"any": ["sponsorship"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
+    {"any": ["hutang", "pinjaman"], "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
+    {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
@@ -238,6 +240,11 @@ class Txn:
             if amount_min is not None and abs(self.nominal) < amount_min:
                 continue
             if amount_max is not None and abs(self.nominal) > amount_max:
+                continue
+            direction = rule.get("direction")  # "masuk" (kredit) / "keluar" (debit) / None (keduanya)
+            if direction == "masuk" and self.nominal <= 0:
+                continue
+            if direction == "keluar" and self.nominal >= 0:
                 continue
             if "any" in rule and not any(_override_keyword_found(kw, text) for kw in rule["any"]):
                 continue
