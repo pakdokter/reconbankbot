@@ -346,14 +346,17 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     out_wb.remove(out_wb.active)
 
     carried = []
+    carried_hutang = []
     previous_closing = None
     for p in (carry_forward_paths or []):
         carried.extend(q.load_asset_ledger(p))
+        carried_hutang.extend(q.load_hutang_ledger(p))
         if previous_closing is None:
             previous_closing = q.load_previous_period_closing(p)
     scanned = q.scan_assets_from_months(months)
     all_assets = q.merge_asset_lists(carried, scanned)
     rel_assets = q.assets_with_relative_idx(all_assets, months)
+    all_hutang = q.merge_hutang_lists(carried_hutang)
 
     income_ref = q.write_quarterly_income_statement(out_wb, months, rel_assets, period_word="Tahunan")
     balance_ref = q.write_quarterly_balance_sheet(
@@ -365,10 +368,11 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     q.write_analysis_sheet(out_wb, months, rel_assets, period_word="Tahunan")
     write_ringkasan_eksekutif(out_wb, months, income_ref, balance_ref, roster_summary, rel_assets, business_name)
     q.write_buku_aset_tetap(out_wb, all_assets, months)
+    q.write_buku_hutang(out_wb, all_hutang)
 
     order = ["Ringkasan Eksekutif", "Laba Rugi Tahunan", "Neraca Tahunan",
              "Saldo Bulanan per Rekening", "Arus Kas Tahunan",
-             "Roster Gaji 12 Bulan", "Analisis & Tren", "Buku Aset Tetap"]
+             "Roster Gaji 12 Bulan", "Analisis & Tren", "Buku Aset Tetap", "Buku Hutang"]
     out_wb._sheets = [out_wb[s] for s in order]
 
     out_wb.save(output_path)
@@ -379,6 +383,7 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
         "n_belum_dibayar_bulan_terakhir": roster_summary["n_belum_dibayar_bulan_terakhir"],
         "n_aset_tetap": len(all_assets),
         "n_aset_carry_forward": len(carried),
+        "n_hutang": len(all_hutang),
     }
 
 
