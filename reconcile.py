@@ -87,14 +87,6 @@ CAPITAL_KEYWORDS = [
 # ditemukan: "BI-Fast Transfer Masuk ... (dari rekening sendiri)".
 CAPITAL_SELF_TRANSFER_KEYWORDS = ["dari rekening sendiri", "rekening sendiri"]
 
-# Semua varian kata untuk selisih kas kasir (kurang/lebih) dan tip
-# pelanggan - user menegaskan semua ini sama artinya dan harus selalu
-# dianggap kategori "Tip/Minus/Lebih", brapapun tulisan persisnya di
-# Kategori/Keterangan (mis. Kategori cuma "Minus", Keterangan "Minus
-# Kasir", "Uang Lebih", "Uang Cust", dst - bukan cuma yang persis
-# tertulis "Tip/Minus/Lebih").
-TIP_MINUS_KEYWORDS = ["minus", "lebih", "cust", "tip"]
-
 # Aturan override kategori berdasarkan kata kunci di Keterangan/Keterangan
 # Tambahan/Objek, ditegaskan langsung oleh user berdasarkan pengalaman
 # nyata bisnisnya - dicek SEBELUM aturan-aturan lain (is_transfer, dst),
@@ -127,6 +119,7 @@ CATEGORY_OVERRIDE_RULES = [
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
 
 # Kategori yang SUDAH deliberate/tegas (modal, laba ditahan, saldo awal,
@@ -212,12 +205,7 @@ class Txn:
 
     @property
     def is_tip_minus_variant(self):
-        """True kalau Kategori ATAU Keterangan menyebut salah satu varian
-        kata untuk selisih kas kasir/tip (minus, lebih, uang cust, tip/
-        tips, dst - lihat TIP_MINUS_KEYWORDS) - semua dianggap kategori
-        yang sama: Tip/Minus/Lebih, apapun ejaan persisnya."""
-        text = f"{self.kategori or ''} {self.desc or ''}".lower()
-        return any(kw in text for kw in TIP_MINUS_KEYWORDS)
+        return (self.effective_kategori or "").strip().lower() == "tip/minus/lebih"
 
     @property
     def category_override(self):
@@ -1374,19 +1362,9 @@ def sumif_modal_one_sheet(sheet, last_row):
 
 
 def sumif_tip_minus_one_sheet(sheet, last_row):
-    """Tip/Minus/Lebih + semua varian kata (minus, lebih, uang cust, tip/
-    tips, dst - lihat TIP_MINUS_KEYWORDS), dicek di Kategori ATAU
-    Keterangan, apapun ejaan persisnya. Pakai SUMPRODUCT (bukan beberapa
-    SUMIFS ditambah) supaya baris yang kebetulan cocok lebih dari satu
-    kata kunci/kolom tetap cuma terhitung SEKALI, bukan dobel."""
-    rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_c = f"'{sheet}'!$M$2:$M${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
-    terms = []
-    for kw in TIP_MINUS_KEYWORDS:
-        terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_c}))")
-        terms.append(f"ISNUMBER(SEARCH(\"{kw}\",{rng_b}))")
-    return f"=SUMPRODUCT(({'+'.join(terms)}>0)*{rng_j})"
+    return f"=SUMIF({rng_c},\"Tip/Minus/Lebih\",{rng_j})"
 
 
 def sumif_gaji_lainnya_formula(sheet, last_row, nama_bulan_list):
