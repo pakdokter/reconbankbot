@@ -131,12 +131,12 @@ def _multi_user_dir(user_id, mode):
 
 def _is_carry_forward_file(path):
     """Deteksi apakah file yang diupload adalah laporan kuartalan/tahunan
-    LAMA (punya sheet 'Buku Aset Tetap') - kalau iya, dipakai untuk
-    menyambung penyusutan aset, bukan dihitung sebagai salah satu file
-    bulanan yang wajib."""
+    LAMA (punya sheet 'Buku Aset Tetap' dan/atau 'Buku Hutang') - kalau
+    iya, dipakai untuk menyambung penyusutan aset/catatan hutang, bukan
+    dihitung sebagai salah satu file bulanan yang wajib."""
     try:
         wb = openpyxl.load_workbook(path, read_only=True)
-        return "Buku Aset Tetap" in wb.sheetnames
+        return "Buku Aset Tetap" in wb.sheetnames or "Buku Hutang" in wb.sheetnames
     except Exception:
         return False
 
@@ -419,6 +419,12 @@ async def _process_multi_report(update: Update, context: ContextTypes.DEFAULT_TY
                 f"Aset tetap tercatat: {summary['n_aset_tetap']}{carry_note} - lihat sheet "
                 "'Buku Aset Tetap' untuk detail jadwal penyusutan. Simpan file ini kalau nanti "
                 "mau membuat laporan berikutnya, supaya kontinuitasnya bisa disambung lagi."
+            )
+        if summary.get("n_hutang", 0) > 0:
+            caption_lines.append(
+                f"Catatan hutang tercatat: {summary['n_hutang']} - lihat sheet 'Buku Hutang' "
+                "(diisi/update manual, ikut tersalin ke laporan berikutnya kalau file ini "
+                "dipakai sebagai carry-forward)."
             )
         await status_msg.delete()
         with open(output_path, "rb") as f:
