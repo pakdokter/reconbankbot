@@ -98,3 +98,108 @@ def push_json_to_postgres(json_path=None):
         conn.commit()
     finally:
         conn.close()
+
+
+def _connect():
+    import psycopg2
+    return psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=5)
+
+
+def _read_row(cur, key):
+    cur.execute("SELECT value FROM shared_rules WHERE key = %s", (key,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _write_row(cur, key, value):
+    cur.execute(
+        """
+        INSERT INTO shared_rules (key, value, updated_at)
+        VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (key, json.dumps(value)),
+    )
+
+
+def add_category_rule(keywords, category, valid_categories, sheet_contains=None):
+    """Tambah satu aturan baru (kata kunci apapun di antara `keywords`
+    -> `category`) ke row 'category_override_rules' di Postgres. Rule
+    baru ditambahkan di UJUNG list (prioritas paling rendah - kalau ada
+    kata kunci yang sama tumpang tindih dengan rule lain yang sudah ada,
+    rule lama tetap menang). `category` DIVALIDASI dulu terhadap
+    `valid_categories` - kalau tidak dikenal, raise ValueError (mencegah
+    kelas bug 'Marketing & RnD' yang pernah terjadi: kategori tujuan yang
+    salah tulis bikin uang hilang tanpa error apapun). global _cache
+    direset supaya proses berikutnya baca ulang dari Postgres, bukan
+    cache lama."""
+    global _cache
+    if category not in valid_categories:
+        raise ValueError(
+            f"Kategori {category!r} tidak dikenal. Pilihan yang valid: {sorted(valid_categories)}"
+        )
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            rules = _read_row(cur, "category_override_rules") or []
+            new_rule = {"any": list(keywords), "category": category, "sheet_contains": sheet_contains}
+            rules.append(new_rule)
+            _write_row(cur, "category_override_rules", rules)
+        conn.commit()
+    finally:
+        conn.close()
+    _cache = None
+    return new_rule
+
+
+def add_employee_alias(short_name, full_name):
+    """Tambah/timpa satu alias pegawai (short_name -> full_name) di row
+    'employee_aliases' di Postgres."""
+    global _cache
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            aliases = _read_row(cur, "employee_aliases") or {}
+            aliases[short_name.strip().lower()] = full_name.strip()
+            _write_row(cur, "employee_aliases", aliases)
+        conn.commit()
+    finally:
+        conn.close()
+    _cache = None
+
+
+def list_category_rules():
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            return _read_row(cur, "category_override_rules") or []
+    finally:
+        conn.close()
+
+
+def list_employee_aliases():
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            return _read_row(cur, "employee_aliases") or {}
+    finally:
+        conn.close()
+
+
+def remove_category_rule(index):
+    """Hapus aturan ke-`index` (0-based, urutan sama seperti /lihataturan)
+    dari row 'category_override_rules'."""
+    global _cache
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            rules = _read_row(cur, "category_override_rules") or []
+            if not (0 <= index < len(rules)):
+                raise IndexError(f"Index {index} di luar jangkauan (ada {len(rules)} aturan)")
+            removed = rules.pop(index)
+            _write_row(cur, "category_override_rules", rules)
+        conn.commit()
+    finally:
+        conn.close()
+    _cache = None
+    return removed
