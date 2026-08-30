@@ -158,6 +158,11 @@ def build_caption(summary):
         "(lihat sheet Rekonsiliasi, bagian 1)",
         f"Indikasi minus/selisih perlu verifikasi: {summary['n_minus_flags']}",
     ]
+    if summary.get("n_new_category", 0) > 0:
+        lines.append(
+            f"Transaksi kategori tidak dikenal: {summary['n_new_category']} "
+            "(lihat sheet Rekonsiliasi, bagian 4 - perlu diaudit)"
+        )
     if summary["with_statements"]:
         lines += [
             "",
