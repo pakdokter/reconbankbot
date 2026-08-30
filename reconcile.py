@@ -65,6 +65,7 @@ TRANSFER_KEYWORDS = [
 DESC_TRANSFER_KEYWORDS = [
     "setoran tunai",
     "setor tunai",
+    "setoran via cdm",
     "pindah rekening",
     "transfer internal",
 ]
@@ -122,6 +123,7 @@ CATEGORY_OVERRIDE_RULES = [
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
+    {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
@@ -133,7 +135,7 @@ CATEGORY_OVERRIDE_RULES = [
 # sudah benar tercatat tidak salah kategori ulang.
 _PROTECTED_FROM_CATEGORY_OVERRIDE = {
     "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
-    "saldo awal", "saldo awal bulan",
+    "saldo awal", "saldo awal bulan", "modal",
 }
 
 
@@ -268,6 +270,11 @@ class Txn:
     def is_capital(self):
         k = (self.effective_kategori or "").lower()
         if any(kw in k for kw in CAPITAL_KEYWORDS):
+            return True
+        # kategori pendek "Modal" (tanpa "& Setoran Pemilik") tetap
+        # dianggap modal - user kadang menyingkat, mis. Keterangan "Modal
+        # Masuk" dengan Kategori cuma "Modal"
+        if k.strip() == "modal" or k.strip().startswith("modal "):
             return True
         if "transfer masuk" in k:
             combined = f"{self.desc or ''} {self.ket or ''}".lower()
@@ -1361,7 +1368,7 @@ def sumif_modal_one_sheet(sheet, last_row):
     rng_c = f"'{sheet}'!$M$2:$M${last_row}"
     rng_b = f"'{sheet}'!$B$2:$B${last_row}"
     rng_j = f"'{sheet}'!$J$2:$J${last_row}"
-    return (f"=SUMIF({rng_c},\"Modal & Setoran Pemilik\",{rng_j})"
+    return (f"=SUMIF({rng_c},\"Modal*\",{rng_j})"
             f"+SUMIF({rng_c},\"Laba Ditahan Bulanan\",{rng_j})"
             f"+SUMIFS({rng_j},{rng_c},\"Transfer Masuk\",{rng_b},\"*rekening sendiri*\")")
 
@@ -1538,7 +1545,7 @@ def _validate_category_override_targets():
     known = set(
         INCOME_CATEGORIES_EXPENSE + INCOME_CATEGORIES_REVENUE +
         MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS +
-        OTHER_CATEGORIES + ["Modal & Setoran Pemilik"]
+        OTHER_CATEGORIES + TRANSFER_CATEGORY_TEXTS + ["Modal & Setoran Pemilik"]
     )
     for rule in CATEGORY_OVERRIDE_RULES:
         target = rule["category"]
