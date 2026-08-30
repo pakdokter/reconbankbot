@@ -211,7 +211,7 @@ class Txn:
         (modal, laba ditahan, saldo awal, gaji - lihat
         _PROTECTED_FROM_CATEGORY_OVERRIDE) dan tidak boleh ditimpa."""
         k = (self.kategori or "").strip().lower()
-        if k in _PROTECTED_FROM_CATEGORY_OVERRIDE or k.startswith("gaji"):
+        if k in _PROTECTED_FROM_CATEGORY_OVERRIDE or k.startswith("gaji") or self.is_opening:
             return None
         if self.nominal > 0 and _looks_like_long_numeric_code(self.desc):
             return "Transaksi Internal"
@@ -241,13 +241,22 @@ class Txn:
     @property
     def effective_kategori(self):
         """Kategori yang SEBENARNYA dipakai untuk semua perhitungan (Laba
-        Rugi, Neraca, pencocokan transfer, dst) - hasil category_override
-        kalau ada yang cocok, kalau tidak ya Kategori asli dari data
-        sumber apa adanya. SEMUA rumus SUMIF/SUMIFS kategori di laporan
-        merujuk ke kolom bantu M (ditulis dari nilai ini), bukan langsung
-        ke kolom C (Kategori asli), supaya override konsisten di semua
-        laporan tanpa perlu duplikasi logika di tiap rumus."""
-        return self.category_override or self.kategori
+        Rugi, Neraca, pencocokan transfer, dst) - urutan: (1)
+        category_override kalau ada aturan yang cocok, (2) Kategori asli
+        apa adanya kalau itu SUDAH salah satu kategori yang dikenal
+        sistem (lihat _is_recognized_category), (3) 'Kategori Baru' kalau
+        Kategori aslinya genuinely tidak dikenal sama sekali - supaya
+        transaksi yang benar-benar belum dikenal TERLIHAT JELAS untuk
+        diaudit, bukan diam-diam hilang dari Laba Rugi seperti kasus
+        'SETORAN VIA CDM'/'Modal' pendek yang pernah kejadian. SEMUA
+        rumus SUMIF/SUMIFS kategori di laporan merujuk ke kolom bantu M
+        (ditulis dari nilai ini), bukan langsung ke kolom C."""
+        override = self.category_override
+        if override:
+            return override
+        if self.is_opening or _is_recognized_category(self.kategori):
+            return self.kategori
+        return "Kategori Baru"
 
     @property
     def is_capital(self):
@@ -859,6 +868,21 @@ def find_minus_flags(all_txns_by_sheet):
     return flags
 
 
+def find_new_category_flags(all_txns_by_sheet):
+    """Kumpulkan semua transaksi yang effective_kategori-nya jadi
+    'Kategori Baru' - genuinely tidak dikenal sistem sama sekali (bukan
+    override yang gagal, bukan yang sudah dikenal seperti Tip/Minus).
+    Dipakai untuk daftar audit di sheet Rekonsiliasi bagian 4, supaya
+    transaksi yang belum dikenal terlihat jelas dan bisa ditelusuri,
+    bukan diam-diam hilang dari Laba Rugi."""
+    flags = []
+    for sheet, txns in all_txns_by_sheet.items():
+        for t in txns:
+            if t.effective_kategori == "Kategori Baru":
+                flags.append(t)
+    return flags
+
+
 # ---------------------------------------------------------------------------
 # Penulisan sheet Rekonsiliasi
 # ---------------------------------------------------------------------------
@@ -876,7 +900,7 @@ def conf_fill(conf):
     return {"High": HIGH_FILL, "Medium": MED_FILL, "Low": LOW_FILL}.get(conf, LOW_FILL)
 
 
-def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None):
+def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None, new_category_flags=None):
     if "Rekonsiliasi" in wb.sheetnames:
         del wb["Rekonsiliasi"]
     ws = wb.create_sheet("Rekonsiliasi")
@@ -1097,6 +1121,47 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
         ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
         r += 1
 
+    r += 1
+    ws.cell(row=r, column=1, value="4. TRANSAKSI KATEGORI BARU (perlu diaudit)")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    if new_category_flags:
+        ws.cell(row=r, column=1, value=(
+            "Kategori aslinya tidak dikenal sistem sama sekali (bukan kesalahan pencocokan, bukan yang "
+            "sudah dikenal seperti Tip/Minus) - ditandai 'Kategori Baru' di kolom M sheet rekening masing-"
+            "masing supaya kelihatan jelas dan tetap terhitung di Laba Rugi (bukan diam-diam hilang). "
+            "Audit tiap baris: kategorikan manual di sumber data, atau minta tambahkan aturan baru."
+        ))
+        ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        ws.row_dimensions[r].height = 40
+        r += 1
+        headers4 = ["Rekening", "Tanggal", "Keterangan", "Kategori Asli", "Objek", "Nominal"]
+        hdr_row4 = r
+        for i, h in enumerate(headers4, start=1):
+            ws.cell(row=hdr_row4, column=i, value=h)
+        style_header(ws, hdr_row4, len(headers4))
+        r += 1
+        for t in sorted(new_category_flags, key=lambda t: _sort_key(t.date)):
+            ws.cell(row=r, column=1, value=t.sheet)
+            ws.cell(row=r, column=2, value=coerce_date(t.date))
+            ws.cell(row=r, column=3, value=t.desc)
+            ws.cell(row=r, column=4, value=t.kategori)
+            ws.cell(row=r, column=5, value=t.objek)
+            ws.cell(row=r, column=6, value=t.nominal)
+            ws.cell(row=r, column=2).number_format = "dd/mm/yyyy"
+            ws.cell(row=r, column=6).number_format = NUMBER_FORMAT
+            for c in range(1, len(headers4) + 1):
+                ws.cell(row=r, column=c).border = BORDER
+                ws.cell(row=r, column=c).fill = MED_FILL
+            r += 1
+    else:
+        ws.cell(row=r, column=1, value="Tidak ada transaksi berkategori baru bulan ini.")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        r += 1
+
     widths = [22, 12, 26, 14, 22, 12, 26, 14, 10, 14, 14, 40, 12, 22, 20]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -1236,7 +1301,33 @@ BANK_FEE_CATEGORY_TEXTS = [
     "Bunga dan Admin Bank",
 ]
 
-OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan", "Pembayaran Hutang"]
+OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan", "Pembayaran Hutang", "Kategori Baru"]
+
+
+def _is_recognized_category(kategori):
+    """True kalau `kategori` (Kategori ASLI dari sumber, sebelum
+    override) sudah salah satu kategori yang dikenal sistem - dicek
+    lewat effective_kategori's fallback chain SEBELUM jatuh ke 'Kategori
+    Baru'. Mencakup: kategori protected (modal, saldo awal, dst), gaji*,
+    kategori transfer-like, kategori modal, dan exact match ke semua
+    kategori Laba Rugi/Lain-lain yang dikenal."""
+    k = (kategori or "").strip().lower()
+    if not k:
+        return False
+    if k in _PROTECTED_FROM_CATEGORY_OVERRIDE or k.startswith("gaji") or k.startswith("modal"):
+        return True
+    if any(kw in k for kw in TRANSFER_KEYWORDS):
+        return True
+    if any(kw in k for kw in CAPITAL_KEYWORDS):
+        return True
+    known_exact = {
+        c.lower() for c in (
+            INCOME_CATEGORIES_EXPENSE + INCOME_CATEGORIES_REVENUE +
+            MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS + OTHER_CATEGORIES
+        )
+    }
+    return k in known_exact
+
 
 
 # ---------------------------------------------------------------------------
@@ -2016,6 +2107,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     matches, combo_matches = find_matches(all_txns, account_sheets)
     minus_flags = find_minus_flags(all_txns_by_sheet)
     balance_status = compute_balance_status(all_txns_by_sheet)
+    new_category_flags = find_new_category_flags(all_txns_by_sheet)
 
     # transaksi yang sudah terjelaskan lewat split/merge tidak perlu lagi
     # tampil sebagai "Needs manual verification" biasa di bagian 1
@@ -2029,7 +2121,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         if m.dst is not None or id(m.src) not in combo_covered_ids
     ]
 
-    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status)
+    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status, new_category_flags)
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
@@ -2071,6 +2163,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
         "n_transfer_not_applicable": n_transfer_not_applicable,
         "n_minus_flags": len(minus_flags),
         "n_balance_issues": n_balance_issues,
+        "n_new_category": len(new_category_flags),
         "with_statements": with_statements,
         "period_label": period_label,
         "no_issues": no_issues,
