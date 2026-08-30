@@ -1954,6 +1954,29 @@ def detect_period_end_date(all_txns, year_month_label):
 # Orkestrasi utama
 # ---------------------------------------------------------------------------
 
+def reload_shared_rules():
+    """Baca ulang shared_rules (Postgres/JSON) dan timpa variabel modul
+    yang relevan - dipanggil di awal run_reconciliation() supaya bot yang
+    sudah lama jalan (proses long-running di Railway) tetap pakai aturan
+    TERBARU dari Postgres tiap file baru diproses, bukan cuma versi yang
+    kebetulan aktif saat bot pertama kali start."""
+    global CATEGORY_OVERRIDE_RULES, TRANSFER_KEYWORDS, CAPITAL_KEYWORDS
+    global DESC_TRANSFER_KEYWORDS, CAPITAL_SELF_TRANSFER_KEYWORDS
+    global _PROTECTED_FROM_CATEGORY_OVERRIDE, TIP_MINUS_THRESHOLD, FLIPTECH_FEE_THRESHOLD
+    shared_rules._cache = None
+    CATEGORY_OVERRIDE_RULES = shared_rules.get("category_override_rules", _DEFAULT_CATEGORY_OVERRIDE_RULES)
+    TRANSFER_KEYWORDS = shared_rules.get("transfer_keywords", TRANSFER_KEYWORDS)
+    CAPITAL_KEYWORDS = shared_rules.get("capital_keywords", CAPITAL_KEYWORDS)
+    DESC_TRANSFER_KEYWORDS = shared_rules.get("desc_transfer_keywords", DESC_TRANSFER_KEYWORDS)
+    CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keywords", CAPITAL_SELF_TRANSFER_KEYWORDS)
+    _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get(
+        "protected_from_category_override", sorted(_PROTECTED_FROM_CATEGORY_OVERRIDE)
+    ))
+    TIP_MINUS_THRESHOLD = shared_rules.get("tip_minus_threshold", TIP_MINUS_THRESHOLD)
+    FLIPTECH_FEE_THRESHOLD = shared_rules.get("fliptech_fee_threshold", FLIPTECH_FEE_THRESHOLD)
+    _validate_category_override_targets()
+
+
 def run_reconciliation(input_path, output_path, with_statements=False):
     """Fungsi utama: rekonsiliasi antar rekening (pencocokan transfer,
     deteksi split/merge, indikasi minus/selisih). Ini yang jalan secara
@@ -1963,6 +1986,7 @@ def run_reconciliation(input_path, output_path, with_statements=False):
     (Laba Rugi, Neraca, Arus Kas) - dibuat opsional supaya proses default
     tetap ringan dan fokus ke rekonsiliasi saja, sesuai kebutuhan.
     """
+    reload_shared_rules()
     wb = openpyxl.load_workbook(input_path)
     REPORT_SHEET_NAMES = {
         "Rekonsiliasi", "Laporan Laba Rugi", "Neraca", "Laporan Arus Kas",
