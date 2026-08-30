@@ -329,6 +329,7 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     Tahunan, Neraca Tahunan, Saldo Bulanan per Rekening, Arus Kas Tahunan,
     Roster Gaji 12 Bulan, Analisis & Tren, Buku Aset Tetap - tidak ada
     sheet rekening/transaksi mentah selain saldo per rekening."""
+    q.reload_shared_rules()
     months = [load_month(p) for p in paths]
     accounts_raw = [load_month_accounts(p) for p in paths]
     # urutkan months DAN months_accounts BERSAMAAN sejak awal (kunci sort
