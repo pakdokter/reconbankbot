@@ -23,6 +23,7 @@ mungkin direpresentasikan sebagai rumus (contoh: catatan naratif audit).
 """
 
 import re
+import shared_rules
 import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -48,13 +49,13 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 # Kategori yang menandakan perpindahan uang ANTAR rekening sendiri
 # (bukan pendapatan/beban riil) -> tidak masuk Laba Rugi, harus saling
 # menutup nol di Rekonsiliasi.
-TRANSFER_KEYWORDS = [
+TRANSFER_KEYWORDS = shared_rules.get("transfer_keywords", [
     "pindah rekening internal",
     "pindang rekening internal",
     "transfer internal",
     "transfer lainnya",
     "transaksi internal",
-]
+])
 
 # Kata kunci di KETERANGAN (bukan kategori) yang juga menandakan transfer
 # antar rekening sendiri, buat jaga-jaga kalau kategorinya salah/tidak
@@ -62,21 +63,21 @@ TRANSFER_KEYWORDS = [
 # kategori "Pindah/Transfer Internal" padahal itu kasir->bank sendiri).
 # Tidak dipakai kalau kategorinya sudah eksplisit "Modal & Setoran Pemilik"
 # (setoran modal dari luar, bukan pindah antar rekening sendiri).
-DESC_TRANSFER_KEYWORDS = [
+DESC_TRANSFER_KEYWORDS = shared_rules.get("desc_transfer_keywords", [
     "setoran tunai",
     "setor tunai",
     "setoran via cdm",
     "pindah rekening",
     "transfer internal",
-]
+])
 
 # Kategori setoran/penarikan modal pemilik -> masuk Neraca (ekuitas),
 # bukan Laba Rugi.
-CAPITAL_KEYWORDS = [
+CAPITAL_KEYWORDS = shared_rules.get("capital_keywords", [
     "modal & setoran pemilik",
     "modal dan setoran pemilik",
     "laba ditahan bulanan",
-]
+])
 
 # "Transfer Masuk" sendirian terlalu umum untuk langsung dianggap Modal
 # (transfer masuk dari pelanggan/pihak luar seharusnya Penjualan, bukan
@@ -85,7 +86,7 @@ CAPITAL_KEYWORDS = [
 # owner sendiri yang dipindah antar rekening, mis. pencairan investasi
 # pribadi yang disetor ke rekening bisnis), sesuai kasus nyata yang
 # ditemukan: "BI-Fast Transfer Masuk ... (dari rekening sendiri)".
-CAPITAL_SELF_TRANSFER_KEYWORDS = ["dari rekening sendiri", "rekening sendiri"]
+CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keywords", ["dari rekening sendiri", "rekening sendiri"])
 
 # Aturan override kategori berdasarkan kata kunci di Keterangan/Keterangan
 # Tambahan/Objek, ditegaskan langsung oleh user berdasarkan pengalaman
@@ -95,14 +96,9 @@ CAPITAL_SELF_TRANSFER_KEYWORDS = ["dari rekening sendiri", "rekening sendiri"]
 # "any": salah satu kata kunci cukup. "all": semua kata kunci harus ada
 # (tidak harus berdekatan). "sheet_contains": opsional, cuma berlaku
 # kalau nama sheet mengandung teks ini (case-insensitive).
-CATEGORY_OVERRIDE_RULES = [
-    # Aturan spesifik (nominal/kombinasi kata kunci) diletakkan SEBELUM
-    # aturan umum yang lebih longgar, karena yang pertama cocok menang -
-    # mis. "Tokopedia dekat Rp1jt via BRIVA" harus dicek dulu sebelum
-    # aturan umum "Tokopedia" supaya tidak keburu ketangkap sebagai
-    # Belanja Bahan biasa.
+_DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
-     "category": "Belanja Operasional", "sheet_contains": None},  # pembelian token listrik via Tokopedia
+     "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
     {"all": ["cashback", "qris"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["cashback mdr"], "category": "Biaya Admin Bank", "sheet_contains": None},
@@ -121,15 +117,14 @@ CATEGORY_OVERRIDE_RULES = [
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
+# Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
+# kalau ada; kalau file/kunci tidak ada, pakai daftar default di atas.
+CATEGORY_OVERRIDE_RULES = shared_rules.get("category_override_rules", _DEFAULT_CATEGORY_OVERRIDE_RULES)
 
-# Kategori yang SUDAH deliberate/tegas (modal, laba ditahan, saldo awal,
-# gaji) TIDAK boleh ditimpa aturan di atas walau kebetulan Keterangan/
-# Objek-nya menyebut kata kunci yang sama - supaya transaksi yang memang
-# sudah benar tercatat tidak salah kategori ulang.
-_PROTECTED_FROM_CATEGORY_OVERRIDE = {
+_PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_category_override", [
     "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
     "saldo awal", "saldo awal bulan", "modal",
-}
+]))
 
 
 def _override_keyword_found(pattern, text):
@@ -752,10 +747,8 @@ def find_split_merge_matches(results):
     return combos
 
 
-FLIPTECH_FEE_THRESHOLD = 2000  # selisih <= ini pada transaksi via Fliptech
-                                 # dipastikan biaya admin, bukan keraguan
-TIP_MINUS_THRESHOLD = 100000  # Tip/Minus/Lebih di bawah ini dianggap wajar,
-                                # tidak perlu verifikasi manual
+FLIPTECH_FEE_THRESHOLD = shared_rules.get("fliptech_fee_threshold", 2000)
+TIP_MINUS_THRESHOLD = shared_rules.get("tip_minus_threshold", 100000)
 
 
 def compute_balance_status(all_txns_by_sheet):
