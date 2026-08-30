@@ -119,6 +119,7 @@ CATEGORY_OVERRIDE_RULES = [
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
     {"any": ["sponsorship"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
+    {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
@@ -1240,7 +1241,7 @@ BANK_FEE_CATEGORY_TEXTS = [
     "Bunga dan Admin Bank",
 ]
 
-OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan"]
+OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan", "Pembayaran Hutang"]
 
 
 # ---------------------------------------------------------------------------
