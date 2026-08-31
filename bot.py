@@ -232,10 +232,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_file = await doc.get_file()
     await tg_file.download_to_drive(cache_path)  # simpan buat trigger /laporan nanti
 
-    caption = (update.message.caption or "").lower()
-    with_statements = any(w in caption for w in LAPORAN_TRIGGER_WORDS)
-
-    await _process_and_reply(update, cache_path, with_statements)
+    # Laporan keuangan (Laba Rugi/Neraca/Arus Kas) sekarang SELALU
+    # disertakan langsung - tidak perlu lagi caption "laporan" atau
+    # panggilan /laporan terpisah. /laporan tetap ada (reprocess file
+    # yang sama) untuk kompatibilitas, tapi hasilnya sama saja.
+    await _process_and_reply(update, cache_path, with_statements=True)
 
 
 async def laporan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
