@@ -1273,15 +1273,22 @@ def write_roster_gaji(wb, months, period_word="kuartal"):
             if nama_lain.lower() in text:
                 return None
         # fallback: kalau TIDAK ADA teks yang menyebut bulan APAPUN sama
-        # sekali (bukan cuma di luar kuartal, tapi genuinely tidak ada
-        # info bulan di teksnya), pakai bulan TRANSAKSI itu sendiri -
-        # asumsi paling wajar (gaji dibayar untuk bulan itu sendiri, bukan
-        # telat/accrual) daripada kehilangan transaksi ini sama sekali
+        # sekali (mis. "Gaji Pegawai Bulan Ini"/"Bulan Lalu" - relatif,
+        # bukan nama bulan eksplisit), tentukan bulan berdasarkan KAPAN
+        # dalam bulan transaksi dibayar - user menegaskan pola nyata gaji
+        # Stoa: dibayar di AKHIR bulan (tanggal >=21) = gaji bulan itu
+        # sendiri; dibayar di AWAL bulan (tanggal <=10) = gaji bulan
+        # SEBELUMNYA (telat/susulan); dibayar di TENGAH bulan (11-20) =
+        # gaji bulan itu juga, khusus pegawai part time.
         tgl = rc.coerce_date(t.date)
         if tgl is not None:
-            nama_bulan_transaksi = rc.MONTHS_ID[tgl.month]
-            if nama_bulan_transaksi in nama_bulan_list:
-                return nama_bulan_transaksi
+            if tgl.day <= 10:
+                bulan_num = tgl.month - 1 if tgl.month > 1 else 12
+            else:
+                bulan_num = tgl.month
+            nama_bulan_target = rc.MONTHS_ID[bulan_num]
+            if nama_bulan_target in nama_bulan_list:
+                return nama_bulan_target
         return None
 
     employee_month_amount = {}  # (kunci-nama, idx-bulan) -> jumlah
