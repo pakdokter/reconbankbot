@@ -97,6 +97,8 @@ CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keyword
 # (tidak harus berdekatan). "sheet_contains": opsional, cuma berlaku
 # kalau nama sheet mengandung teks ini (case-insensitive).
 _DEFAULT_CATEGORY_OVERRIDE_RULES = [
+    {"any": ["ahmad roziyan hidayat", "roziyan hidayat", "roziyan", "ojan", "kak ojan", "owner"],
+     "kategori_asli": "transfer masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
      "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
@@ -114,6 +116,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin", "perbaikan bangunan", "maintenance"], "category": "Reparasi dan Maintenance", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
@@ -215,7 +218,7 @@ class Txn:
             return None
         if self.nominal > 0 and _looks_like_long_numeric_code(self.desc):
             return "Transaksi Internal"
-        text = f"{self.desc or ''} {self.ket or ''} {self.objek or ''} {self.subjek or ''}".lower()
+        text = f"{self.kategori or ''} {self.desc or ''} {self.ket or ''} {self.objek or ''} {self.subjek or ''}".lower()
         for rule in CATEGORY_OVERRIDE_RULES:
             sheet_filter = rule.get("sheet_contains")
             if sheet_filter and sheet_filter not in (self.sheet or "").lower():
@@ -230,6 +233,9 @@ class Txn:
             if direction == "masuk" and self.nominal <= 0:
                 continue
             if direction == "keluar" and self.nominal >= 0:
+                continue
+            kategori_asli = rule.get("kategori_asli")
+            if kategori_asli is not None and k != kategori_asli:
                 continue
             if "any" in rule and not any(_override_keyword_found(kw, text) for kw in rule["any"]):
                 continue
@@ -1246,7 +1252,7 @@ INCOME_CATEGORIES_EXPENSE = [
     "Belanja Bahan",
     "Belanja Operasional",
     "Belanja Konsumsi",
-    "Reparasi",
+    "Reparasi dan Maintenance",
     "Belanja Assets",
 ]
 
