@@ -97,8 +97,6 @@ CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keyword
 # (tidak harus berdekatan). "sheet_contains": opsional, cuma berlaku
 # kalau nama sheet mengandung teks ini (case-insensitive).
 _DEFAULT_CATEGORY_OVERRIDE_RULES = [
-    {"any": ["ahmad roziyan hidayat", "roziyan hidayat", "roziyan", "ojan", "kak ojan", "owner"],
-     "kategori_asli": "transfer masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
      "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
@@ -106,23 +104,67 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["cashback mdr"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["cashback jago"], "category": "Biaya Admin Bank", "sheet_contains": "jago"},
     {"any": ["dr koreksi bunga"], "category": "Biaya Admin Bank", "sheet_contains": None},
+    {"any": ["interest on account"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["layanan"], "category": "Belanja Operasional", "sheet_contains": "jago"},
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
-    {"any": ["sponsorship"], "category": "Marketing", "sheet_contains": None},
+    {"any": ["sponsorship", "charity", "donasi"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
+    {"any": ["sahabudin"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
+    {"any": ["tarik tunai"], "category": "Penjualan", "sheet_contains": "kas"},
     {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
-    {"any": ["reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin", "perbaikan bangunan", "maintenance"], "category": "Reparasi dan Maintenance", "sheet_contains": None},
+    {"any": ["pulsa"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["sisa belanja", "sisa set"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["tukang", "reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin",
+             "perbaikan bangunan", "perbaiki ac", "perbaiki mesin", "uang ac", "maintenance"],
+     "category": "Reparasi dan Maintenance", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
 # kalau ada; kalau file/kunci tidak ada, pakai daftar default di atas.
-CATEGORY_OVERRIDE_RULES = shared_rules.get("category_override_rules", _DEFAULT_CATEGORY_OVERRIDE_RULES)
+
+
+def _build_transfer_masuk_rules():
+    """Bangun 3 aturan 'Transfer Masuk' yang ambigu (Kategori/Keterangan
+    menyebut 'transfer masuk' tapi tidak jelas dari siapa), berdasarkan
+    daftar alias pegawai/owner yang sedang aktif (shared_rules ->
+    employee_aliases). User menegaskan urutan logika: (1) dari owner ->
+    Modal & Setoran Pemilik, (2) dari pegawai (bukan owner) -> Belanja
+    Operasional dengan nilai positif (sisa belanja/reimbursement), (3)
+    bukan keduanya DAN nominal di bawah Rp300.000 -> Penjualan (kemungkinan
+    besar pembayaran pelanggan kecil via QRIS/transfer). Nominal besar
+    yang bukan owner/pegawai TIDAK di-assign otomatis - tetap jadi
+    'Kategori Baru' untuk diaudit manual, sesuai penegasan user."""
+    aliases = shared_rules.get("employee_aliases", {})
+    owner_keywords = sorted({k for k, v in aliases.items() if v == "Ahmad Roziyan Hidayat"})
+    employee_keywords = sorted({k for k, v in aliases.items() if v != "Ahmad Roziyan Hidayat"})
+    rules = []
+    if owner_keywords:
+        rules.append({"all": ["transfer masuk"], "any": owner_keywords,
+                       "category": "Modal & Setoran Pemilik", "sheet_contains": None})
+    if employee_keywords:
+        rules.append({"all": ["transfer masuk"], "any": employee_keywords,
+                       "category": "Belanja Operasional", "sheet_contains": None})
+    rules.append({"all": ["transfer masuk"], "none_of": owner_keywords + employee_keywords,
+                  "amount_max": 300000, "category": "Penjualan", "sheet_contains": None})
+    # Fallback KHUSUS untuk "transfer masuk" yang TIDAK match salah satu
+    # dari 3 aturan di atas (bukan owner, bukan pegawai, nominal >=
+    # Rp300rb) - paksa jadi 'Kategori Baru' supaya benar-benar diaudit.
+    # Tanpa ini, kategori ASLI (mis. 'Transfer Lainnya'/'Transaksi
+    # Internal') akan dianggap "sudah dikenal" oleh _is_recognized_category
+    # (karena memang salah satu TRANSFER_KEYWORDS) dan lolos begitu saja
+    # tanpa audit, padahal justru inilah yang paling perlu diaudit.
+    rules.append({"all": ["transfer masuk"], "category": "Kategori Baru", "sheet_contains": None})
+    return rules
+
+
+_STATIC_CATEGORY_OVERRIDE_RULES = shared_rules.get("category_override_rules", _DEFAULT_CATEGORY_OVERRIDE_RULES)
+CATEGORY_OVERRIDE_RULES = _STATIC_CATEGORY_OVERRIDE_RULES + _build_transfer_masuk_rules()
 
 _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_category_override", [
     "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
@@ -141,13 +183,20 @@ def _override_keyword_found(pattern, text):
 # User menegaskan pola ini = transfer internal MASUK (kredit).
 _LONG_NUMERIC_KETERANGAN_RE = re.compile(r"^\d{10,}$")
 _SCI_NOTATION_KETERANGAN_RE = re.compile(r"^\d(\.\d+)?e\+?\d+$", re.IGNORECASE)
+# Kode referensi Fliptech di BRI kadang berupa huruf+angka (mis.
+# "FLP686872907"), bukan angka murni - user menegaskan pola ini BIASANYA
+# transfer masuk, tapi tetap harus divalidasi manual (bukan match otomatis
+# dengan percaya diri) - jadi cukup dikategorikan Transaksi Internal
+# supaya masuk proses pencocokan normal, bukan diserahkan ke aturan lain.
+_FLP_CODE_RE = re.compile(r"^flp\d{6,}$", re.IGNORECASE)
 
 
 def _looks_like_long_numeric_code(desc):
     text = str(desc if desc is not None else "").strip()
     if not text:
         return False
-    return bool(_LONG_NUMERIC_KETERANGAN_RE.match(text)) or bool(_SCI_NOTATION_KETERANGAN_RE.match(text))
+    return (bool(_LONG_NUMERIC_KETERANGAN_RE.match(text)) or bool(_SCI_NOTATION_KETERANGAN_RE.match(text))
+            or bool(_FLP_CODE_RE.match(text)))
 
 
 # Kategori saldo awal -> dipakai untuk saldo awal Neraca, dilewati saat
@@ -240,6 +289,8 @@ class Txn:
             if "any" in rule and not any(_override_keyword_found(kw, text) for kw in rule["any"]):
                 continue
             if "all" in rule and not all(_override_keyword_found(kw, text) for kw in rule["all"]):
+                continue
+            if "none_of" in rule and any(_override_keyword_found(kw, text) for kw in rule["none_of"]):
                 continue
             return rule["category"]
         return None
@@ -827,11 +878,15 @@ def compute_balance_status(all_txns_by_sheet):
         ekuitas = saldo_awal + modal + laba_bersih
         transfer_bersih = sum_multi(txns, TRANSFER_CATEGORY_TEXTS)
         selisih = round((total_aset - ekuitas) - transfer_bersih, 2)
+        kategori_baru_txns = [t for t in txns if t.effective_kategori == "Kategori Baru"]
+        kategori_baru_total = round(sum(t.nominal for t in kategori_baru_txns), 2)
         results[sheet] = {
             "total_aset": round(total_aset, 2),
             "ekuitas": round(ekuitas, 2),
             "transfer_bersih": round(transfer_bersih, 2),
             "selisih": selisih,
+            "n_kategori_baru": len(kategori_baru_txns),
+            "kategori_baru_total": kategori_baru_total,
         }
     return results
 
@@ -1081,7 +1136,7 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
     ws.cell(row=r, column=1).fill = SECTION_FILL
     r += 1
     if balance_status:
-        headers3 = ["Rekening", "Total Aset", "Total Ekuitas", "Transfer Bersih", "Selisih", "Status"]
+        headers3 = ["Rekening", "Total Aset", "Total Ekuitas", "Transfer Bersih", "Selisih", "Dari Kategori Baru", "Status"]
         hdr_row3 = r
         for i, h in enumerate(headers3, start=1):
             ws.cell(row=hdr_row3, column=i, value=h)
@@ -1089,38 +1144,52 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
         r += 1
         any_selisih = False
         total_selisih = 0.0
+        total_kategori_baru = 0.0
+        total_n_kategori_baru = 0
         for sheet, s in balance_status.items():
             balanced = abs(s["selisih"]) < 1  # toleransi Rp1 (noise pembulatan)
             if not balanced:
                 any_selisih = True
             total_selisih += s["selisih"]
+            total_kategori_baru += s.get("kategori_baru_total", 0)
+            total_n_kategori_baru += s.get("n_kategori_baru", 0)
             ws.cell(row=r, column=1, value=sheet)
             ws.cell(row=r, column=2, value=s["total_aset"])
             ws.cell(row=r, column=3, value=s["ekuitas"])
             ws.cell(row=r, column=4, value=s["transfer_bersih"])
             ws.cell(row=r, column=5, value=s["selisih"])
-            ws.cell(row=r, column=6, value="Balanced" if balanced else f"ADA SELISIH Rp{abs(s['selisih']):,.0f}".replace(",", "."))
+            n_kb = s.get("n_kategori_baru", 0)
+            ws.cell(row=r, column=6, value=f"Rp{s.get('kategori_baru_total', 0):,.0f} ({n_kb} transaksi)".replace(",", ".") if n_kb else "-")
+            ws.cell(row=r, column=7, value="Balanced" if balanced else f"ADA SELISIH Rp{abs(s['selisih']):,.0f}".replace(",", "."))
             for c in (2, 3, 4, 5):
                 ws.cell(row=r, column=c).number_format = NUMBER_FORMAT
             for c in range(1, len(headers3) + 1):
                 ws.cell(row=r, column=c).border = BORDER
-            ws.cell(row=r, column=6).fill = HIGH_FILL if balanced else LOW_FILL
-            ws.cell(row=r, column=6).font = Font(bold=True)
+            ws.cell(row=r, column=7).fill = HIGH_FILL if balanced else LOW_FILL
+            ws.cell(row=r, column=7).font = Font(bold=True)
             r += 1
         r += 1
         if any_selisih:
+            kb_note = ""
+            if total_n_kategori_baru:
+                kb_amount_fmt = f"{abs(total_kategori_baru):,.0f}".replace(",", ".")
+                kb_note = (
+                    f" Dari selisih ini, Rp{kb_amount_fmt} berasal dari {total_n_kategori_baru} "
+                    "transaksi 'Kategori Baru' yang SENGAJA dikeluarkan dari perhitungan Laba Rugi/Neraca "
+                    "(belum jelas kategorinya, harus diaudit dulu - lihat bagian 4 di bawah) - bukan bug, ini "
+                    "dibiarkan tidak balance supaya selalu terlihat masih ada yang perlu diaudit."
+                )
             ws.cell(row=r, column=1,
                     value=(f"BELUM SELESAI: masih ada selisih total Rp{abs(total_selisih):,.0f} yang belum "
-                           "terjelaskan (lihat kolom Selisih per rekening di atas). Cek kembali bagian 1 & 2 "
-                           "di atas dan sheet rekening masing-masing (kolom L) sebelum laporan ini dianggap final."
-                           .replace(",", ".")))
+                           "terjelaskan (lihat kolom Selisih per rekening di atas)."
+                           .replace(",", ".") + kb_note))
             ws.cell(row=r, column=1).font = Font(bold=True, color="B91C1C")
         else:
             ws.cell(row=r, column=1, value="SELESAI: semua rekening balanced, tidak ada selisih yang perlu ditelusuri lebih lanjut.")
             ws.cell(row=r, column=1).font = Font(bold=True, color="15803D")
         ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=len(headers3))
-        ws.row_dimensions[r].height = 28
+        ws.row_dimensions[r].height = 40
         r += 1
     else:
         ws.cell(row=r, column=1, value="(status keseimbangan tidak dihitung)")
@@ -1307,7 +1376,7 @@ BANK_FEE_CATEGORY_TEXTS = [
     "Bunga dan Admin Bank",
 ]
 
-OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan", "Pembayaran Hutang", "Kategori Baru"]
+OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan", "Pembayaran Hutang"]
 
 
 def _is_recognized_category(kategori):
@@ -1615,9 +1684,15 @@ def _validate_category_override_targets():
         MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS +
         OTHER_CATEGORIES + TRANSFER_CATEGORY_TEXTS + ["Modal & Setoran Pemilik"]
     )
+    # 'Kategori Baru' SENGAJA dikecualikan dari 'known' - ini bukan bug,
+    # ini SATU-SATUNYA target yang memang sengaja TIDAK dihitung SUMIF
+    # manapun (dikeluarkan total dari Laba Rugi/Neraca sesuai penegasan
+    # user, supaya Neraca genuinely tidak balance selama masih ada
+    # transaksi yang belum diaudit - lihat compute_balance_status).
+    allowed_special = known | {"Kategori Baru"}
     for rule in CATEGORY_OVERRIDE_RULES:
         target = rule["category"]
-        if target not in known:
+        if target not in allowed_special:
             raise AssertionError(
                 f"CATEGORY_OVERRIDE_RULES: kategori tujuan {target!r} bukan salah satu kategori "
                 "yang dikenali rumus SUMIF/SUMIFS laporan keuangan - uang yang di-override ke sini "
@@ -2057,11 +2132,13 @@ def reload_shared_rules():
     sudah lama jalan (proses long-running di Railway) tetap pakai aturan
     TERBARU dari Postgres tiap file baru diproses, bukan cuma versi yang
     kebetulan aktif saat bot pertama kali start."""
-    global CATEGORY_OVERRIDE_RULES, TRANSFER_KEYWORDS, CAPITAL_KEYWORDS
+    global CATEGORY_OVERRIDE_RULES, TRANSFER_KEYWORDS, CAPITAL_KEYWORDS, _STATIC_CATEGORY_OVERRIDE_RULES
     global DESC_TRANSFER_KEYWORDS, CAPITAL_SELF_TRANSFER_KEYWORDS
     global _PROTECTED_FROM_CATEGORY_OVERRIDE, TIP_MINUS_THRESHOLD, FLIPTECH_FEE_THRESHOLD
     shared_rules._cache = None
     CATEGORY_OVERRIDE_RULES = shared_rules.get("category_override_rules", _DEFAULT_CATEGORY_OVERRIDE_RULES)
+    _STATIC_CATEGORY_OVERRIDE_RULES = CATEGORY_OVERRIDE_RULES
+    CATEGORY_OVERRIDE_RULES = CATEGORY_OVERRIDE_RULES + _build_transfer_masuk_rules()
     TRANSFER_KEYWORDS = shared_rules.get("transfer_keywords", TRANSFER_KEYWORDS)
     CAPITAL_KEYWORDS = shared_rules.get("capital_keywords", CAPITAL_KEYWORDS)
     DESC_TRANSFER_KEYWORDS = shared_rules.get("desc_transfer_keywords", DESC_TRANSFER_KEYWORDS)
@@ -2074,7 +2151,7 @@ def reload_shared_rules():
     _validate_category_override_targets()
 
 
-def run_reconciliation(input_path, output_path, with_statements=False):
+def run_reconciliation(input_path, output_path, with_statements=True):
     """Fungsi utama: rekonsiliasi antar rekening (pencocokan transfer,
     deteksi split/merge, indikasi minus/selisih). Ini yang jalan secara
     default setiap ada file masuk.
@@ -2181,6 +2258,6 @@ if __name__ == "__main__":
     import sys
     inp = sys.argv[1] if len(sys.argv) > 1 else "Recon_Januari_2025.xlsx"
     out = sys.argv[2] if len(sys.argv) > 2 else "Recon_Januari_2025_HASIL.xlsx"
-    with_stmt = "--laporan" in sys.argv
+    with_stmt = "--recon-only" not in sys.argv
     s = run_reconciliation(inp, out, with_statements=with_stmt)
     print(s)
