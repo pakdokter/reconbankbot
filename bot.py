@@ -49,7 +49,7 @@ from telegram.error import Conflict, NetworkError
 
 from reconcile import run_reconciliation
 import reconcile as rc
-from quarterly import run_quarterly_report, QuarterlyInputError
+from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report
 from annual import run_annual_report, AnnualInputError
 import shared_rules
 
@@ -163,6 +163,11 @@ def build_caption(summary):
             f"Transaksi kategori tidak dikenal: {summary['n_new_category']} "
             "(lihat sheet Rekonsiliasi, bagian 4 - perlu diaudit)"
         )
+    if summary.get("n_gaji_telat", 0) > 0:
+        lines.append(
+            f"Gaji telat/susulan (bukan untuk bulan ini): {summary['n_gaji_telat']} "
+            "(lihat sheet 'Roster Gaji Bulan Ini')"
+        )
     if summary["with_statements"]:
         lines += [
             "",
@@ -204,6 +209,14 @@ async def _process_and_reply(update, input_path, with_statements):
                 "Cek apakah nama kolom dan urutan sheet sesuai format baku."
             )
             return
+        # Roster Gaji Bulan Ini (audit telat/tepat waktu) - kegagalan di
+        # sini TIDAK menggagalkan pengiriman file rekonsiliasi utama,
+        # cuma dicatat ke log (fitur tambahan, bukan inti).
+        try:
+            roster_summary = add_roster_to_monthly_report(raw_output_path)
+            summary["n_gaji_telat"] = roster_summary.get("n_telat", 0)
+        except Exception:
+            logger.exception("Gagal menambahkan Roster Gaji Bulan Ini (dilewati, file utama tetap dikirim)")
         final_filename = build_output_filename(summary, with_statements)
         await status_msg.delete()
         with open(raw_output_path, "rb") as f:
