@@ -555,6 +555,129 @@ def _nama_bulan_short(label):
     return label.rsplit(" ", 1)[0]
 
 
+def write_roster_gaji_bulanan(wb, month):
+    """Sheet 'Roster Gaji Bulan Ini' untuk REKONSILIASI BULANAN (satu
+    bulan, bukan kuartal/tahun) - daftar detail tiap transaksi Gaji*
+    bulan ini dengan status TEPAT WAKTU / TELAT-SUSULAN, supaya user bisa
+    audit langsung dari laporan bulanan tanpa perlu tunggu laporan
+    kuartalan. `month` adalah SATU dict hasil load_month() (bukan list)."""
+    name = "Roster Gaji Bulan Ini"
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    label = month["label"]
+    nama_bulan_ini = _nama_bulan_short(label)
+
+    ws["A1"] = f"ROSTER GAJI PEGAWAI - {label.upper()}"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = (
+        "Daftar semua transaksi berkategori Gaji* bulan ini, dengan status TEPAT WAKTU (dibayar untuk "
+        "bulan ini) atau TELAT/SUSULAN (dibayar untuk bulan lain - accrual). Status ditentukan dari nama "
+        "bulan yang DISEBUT DI KETERANGAN transaksi kalau ada (mis. 'Gaji Eva Januari 2025'), kalau tidak "
+        "disebut sama sekali dipakai aturan waktu pembayaran (akhir bulan >=tgl 21 = bulan ini, awal bulan "
+        "<=tgl 10 = bulan lalu/susulan, tengah bulan = bulan ini untuk part time)."
+    )
+    ws["A2"].font = Font(italic=True, size=9, color="6B7280")
+
+    def _bulan_untuk_dan_sumber(t):
+        text = f"{t.desc or ''} {t.ket or ''}".lower()
+        if nama_bulan_ini.lower() in text:
+            return nama_bulan_ini, "disebut eksplisit di keterangan"
+        for nama_lain in rc.MONTHS_ID[1:]:
+            if nama_lain != nama_bulan_ini and nama_lain.lower() in text:
+                return nama_lain, "disebut eksplisit di keterangan"
+        tgl = rc.coerce_date(t.date)
+        if tgl is not None:
+            if tgl.day <= 10:
+                bulan_num = tgl.month - 1 if tgl.month > 1 else 12
+            else:
+                bulan_num = tgl.month
+            return rc.MONTHS_ID[bulan_num], "diperkirakan dari tanggal pembayaran (tidak disebut eksplisit)"
+        return None, "tidak diketahui"
+
+    all_txns = month["all_txns"]
+    batch_payroll_ids = _find_batch_payroll_ids(all_txns)
+    rows = []
+    for t in all_txns:
+        if _is_gaji_like(t, batch_payroll_ids) and t.objek:
+            emp = resolve_employee_for_gaji(t)
+            bulan_untuk, sumber = _bulan_untuk_dan_sumber(t)
+            if bulan_untuk == nama_bulan_ini:
+                status = "TEPAT WAKTU"
+            elif bulan_untuk is None:
+                status = "TIDAK DIKETAHUI - cek manual"
+            else:
+                status = f"TELAT/SUSULAN (untuk {bulan_untuk})"
+            rows.append((emp, rc.coerce_date(t.date), t.nominal, t.kategori, t.desc, status, sumber))
+    rows.sort(key=lambda r: (r[1] is None, r[1], r[0]))
+
+    r = 4
+    headers = ["Pegawai", "Tanggal Dibayar", "Nominal", "Kategori Asli", "Keterangan", "Status", "Cara Deteksi"]
+    for i, h in enumerate(headers, start=1):
+        ws.cell(row=r, column=i, value=h)
+    rc.style_header(ws, r, len(headers))
+    r += 1
+    n_telat = 0
+    for emp, tgl, nominal, kat, desc, status, sumber in rows:
+        if status.startswith("TELAT"):
+            n_telat += 1
+        ws.cell(row=r, column=1, value=emp)
+        ws.cell(row=r, column=2, value=tgl)
+        ws.cell(row=r, column=3, value=nominal)
+        ws.cell(row=r, column=4, value=kat)
+        ws.cell(row=r, column=5, value=desc)
+        ws.cell(row=r, column=6, value=status)
+        ws.cell(row=r, column=7, value=sumber)
+        ws.cell(row=r, column=2).number_format = "dd/mm/yyyy"
+        ws.cell(row=r, column=3).number_format = rc.NUMBER_FORMAT
+        for c in range(1, len(headers) + 1):
+            ws.cell(row=r, column=c).border = rc.BORDER
+        fill = rc.LOW_FILL if status.startswith("TELAT") else (rc.MED_FILL if "TIDAK DIKETAHUI" in status else rc.HIGH_FILL)
+        ws.cell(row=r, column=6).fill = fill
+        ws.cell(row=r, column=6).font = Font(bold=True)
+        r += 1
+
+    if not rows:
+        ws.cell(row=r, column=1, value="(tidak ada transaksi berkategori Gaji bulan ini)")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        r += 1
+    else:
+        r += 1
+        summary_text = f"Total {len(rows)} transaksi gaji, {n_telat} di antaranya TELAT/SUSULAN (bukan untuk bulan ini)."
+        ws.cell(row=r, column=1, value=summary_text)
+        ws.cell(row=r, column=1).font = Font(bold=True, color="B45309" if n_telat else "15803D")
+
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 22
+    ws.column_dimensions["E"].width = 32
+    ws.column_dimensions["F"].width = 26
+    ws.column_dimensions["G"].width = 40
+    ws.freeze_panes = "A5"
+    return {"n_gaji_transaksi": len(rows), "n_telat": n_telat}
+
+
+def add_roster_to_monthly_report(output_path):
+    """Tambah sheet 'Roster Gaji Bulan Ini' ke laporan REKONSILIASI
+    BULANAN (bukan kuartalan/tahunan) yang SUDAH dibuat & disimpan oleh
+    run_reconciliation() - dipanggil SETELAH file itu tersimpan (dari
+    bot.py), supaya user bisa audit penundaan gaji langsung dari laporan
+    bulanan tanpa perlu tunggu laporan kuartalan."""
+    month = load_month(output_path)
+    wb = openpyxl.load_workbook(output_path)
+    result = write_roster_gaji_bulanan(wb, month)
+    order = [s for s in wb.sheetnames if s != "Roster Gaji Bulan Ini"]
+    if "Rekonsiliasi" in order:
+        idx = order.index("Rekonsiliasi") + 1
+        order.insert(idx, "Roster Gaji Bulan Ini")
+    else:
+        order.append("Roster Gaji Bulan Ini")
+    wb._sheets = [wb[s] for s in order]
+    wb.save(output_path)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Laba Rugi Kuartal (kolom = 3 bulan + TOTAL). Basis kas per bulan
 # pembayaran - Gaji TIDAK direalokasi ke bulan yang digaji (beda dengan
