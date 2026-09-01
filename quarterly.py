@@ -549,6 +549,61 @@ def merge_hutang_lists(*entry_lists):
     return list(merged.values())
 
 
+def _auto_update_hutang_payments(hutang_entries, all_txns):
+    """Update otomatis 'Total Sudah Dibayar'/'Sisa Hutang'/'Status' tiap
+    entri Buku Hutang berdasarkan transaksi berkategori 'Pembayaran
+    Hutang' yang BENAR-BENAR ditemukan di bulan-bulan yang sedang
+    diproses laporan ini - supaya tidak lagi harus 100% diisi manual
+    (sebelumnya: Total Sudah Dibayar tetap Rp0 selamanya kalau user tidak
+    update manual, padahal cicilan rutin sudah tercatat sistem lewat
+    kategori Pembayaran Hutang).
+
+    Pencocokan "pembayaran ini punya siapa" pakai substring sederhana:
+    kata di 'Deskripsi / Pemberi Pinjaman' (mis. 'Muh Yani') harus muncul
+    di Objek/Keterangan transaksi Pembayaran Hutang (mis. 'MUH YANI SH').
+    Kalau ada BEBERAPA entri hutang match transaksi yang sama (nama
+    tumpang tindih), transaksi itu dihitung ke SEMUA yang match (jarang
+    terjadi kalau nama pemberi pinjaman berbeda-beda) - user tetap bisa
+    override manual kalau perlu, angka hasil auto-update ini cuma titik
+    awal, bukan mengunci kolom.
+
+    Nilai yang ditambahkan HANYA dari bulan-bulan laporan ini (BUKAN
+    menggantikan carry-forward 'total_dibayar' dari laporan sebelumnya -
+    ditambahkan ke situ), supaya kontinuitas antar laporan tetap benar."""
+    if not hutang_entries:
+        return hutang_entries
+    pembayaran_txns = [t for t in all_txns if t.effective_kategori == "Pembayaran Hutang"]
+    updated = []
+    for e in hutang_entries:
+        e = dict(e)
+        deskripsi = str(e.get("deskripsi") or "").strip().lower()
+        pembayaran_periode_ini = 0.0
+        matched_desc = []
+        if deskripsi:
+            for t in pembayaran_txns:
+                text = f"{t.desc or ''} {t.ket or ''} {t.objek or ''} {t.subjek or ''}".lower()
+                if deskripsi in text:
+                    pembayaran_periode_ini += abs(t.nominal)
+                    matched_desc.append(f"{t.sheet} baris {t.row}: Rp{abs(t.nominal):,.0f}".replace(",", "."))
+        total_dibayar_lama = e.get("total_dibayar") or 0
+        if not isinstance(total_dibayar_lama, (int, float)):
+            total_dibayar_lama = 0
+        total_dibayar_baru = round(total_dibayar_lama + pembayaran_periode_ini, 2)
+        nilai_pinjaman = e.get("nilai_pinjaman") or 0
+        sisa_hutang_baru = round((nilai_pinjaman if isinstance(nilai_pinjaman, (int, float)) else 0) - total_dibayar_baru, 2)
+        e["total_dibayar"] = total_dibayar_baru
+        e["sisa_hutang"] = sisa_hutang_baru
+        e["status"] = "Lunas" if sisa_hutang_baru <= 0 else "Belum Lunas"
+        if pembayaran_periode_ini:
+            catatan_lama = str(e.get("catatan") or "").strip()
+            catatan_auto = (
+                f"[Auto] +Rp{pembayaran_periode_ini:,.0f} terdeteksi periode laporan ini ({', '.join(matched_desc)})."
+            ).replace(",", ".")
+            e["catatan"] = f"{catatan_lama} {catatan_auto}".strip()
+        updated.append(e)
+    return updated
+
+
 def write_buku_aset_tetap(wb, assets, months):
     """Sheet 'Buku Aset Tetap' - daftar LENGKAP semua aset yang diketahui
     (dari laporan ini + yang di-carry-forward dari laporan sebelumnya),
@@ -1342,6 +1397,7 @@ _DEFAULT_EMPLOYEE_ALIASES = {
     "adinda nurusshafwa": "Adinda Nurusshafwa",
     "dinda": "Adinda Nurusshafwa",
     "baiq widiani rintis sari": "Baiq Widiani Rintis Sari",
+    "baiq widiani rinti": "Baiq Widiani Rintis Sari",
     "widia": "Baiq Widiani Rintis Sari",
     "sari": "Baiq Widiani Rintis Sari",
     "kurnia utami nur": "Kurnia Utami Nur",
@@ -1919,6 +1975,8 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     all_assets = merge_asset_lists(carried, scanned)
     rel_assets = assets_with_relative_idx(all_assets, months)
     all_hutang = merge_hutang_lists(carried_hutang)
+    all_txns_periode = [t for m in months for t in m["all_txns"]]
+    all_hutang = _auto_update_hutang_payments(all_hutang, all_txns_periode)
 
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
