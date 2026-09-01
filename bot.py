@@ -49,7 +49,7 @@ from telegram.error import Conflict, NetworkError
 
 from reconcile import run_reconciliation
 import reconcile as rc
-from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report
+from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report, check_continuity_between_months
 from annual import run_annual_report, AnnualInputError
 import shared_rules
 
@@ -227,10 +227,79 @@ async def _process_and_reply(update, input_path, with_statements):
             )
 
 
+async def kontinuitas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bandingkan Saldo Akhir tiap rekening di file BULAN LALU dengan
+    Saldo Awal rekening yang sama di file BULAN INI - deteksi selisih
+    tepat di batas antar bulan (mis. Saldo Awal diketik manual, tidak
+    nyambung dari Saldo Akhir bulan sebelumnya)."""
+    context.user_data["kontinuitas_mode"] = True
+    context.user_data["kontinuitas_files"] = []
+    await update.message.reply_text(
+        "Mode cek kontinuitas aktif. Upload 2 file secara berurutan:\n"
+        "1. File rekonsiliasi bulan LALU (yang lebih awal)\n"
+        "2. File rekonsiliasi bulan INI (yang lebih baru, urutan setelahnya)\n\n"
+        "Kirim /batal kalau mau keluar dari mode ini."
+    )
+
+
+async def handle_kontinuitas_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    files = context.user_data.setdefault("kontinuitas_files", [])
+    user_id = update.effective_user.id
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"kontinuitas_{user_id}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    dest = os.path.join(tmp_dir, f"file_{len(files) + 1}.xlsx")
+    tg_file = await doc.get_file()
+    await tg_file.download_to_drive(dest)
+    files.append(dest)
+
+    if len(files) < 2:
+        await update.message.reply_text(f"File {len(files)}/2 diterima. Upload 1 file lagi (bulan yang lebih baru).")
+        return
+
+    status_msg = await update.message.reply_text("Membandingkan kontinuitas, tunggu sebentar...")
+    try:
+        result = check_continuity_between_months(files[0], files[1])
+    except QuarterlyInputError as e:
+        await status_msg.edit_text(f"Gagal: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        context.user_data["kontinuitas_mode"] = False
+        context.user_data["kontinuitas_files"] = []
+        return
+    except Exception as e:
+        logger.exception("Gagal cek kontinuitas")
+        await status_msg.edit_text(f"Gagal memproses: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        context.user_data["kontinuitas_mode"] = False
+        context.user_data["kontinuitas_files"] = []
+        return
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    context.user_data["kontinuitas_mode"] = False
+    context.user_data["kontinuitas_files"] = []
+
+    lines = ["Hasil cek kontinuitas:\n"]
+    for row in result["rows"]:
+        akhir = f"Rp{row['saldo_akhir_lalu']:,.0f}".replace(",", ".") if row["saldo_akhir_lalu"] is not None else "-"
+        awal = f"Rp{row['saldo_awal_ini']:,.0f}".replace(",", ".") if row["saldo_awal_ini"] is not None else "-"
+        selisih = f"Rp{row['selisih']:,.0f}".replace(",", ".") if row["selisih"] is not None else "-"
+        mark = "✅" if row["status"] == "OK" else "⚠️"
+        lines.append(f"{mark} {row['rekening']}: {akhir} → {awal} (selisih {selisih}) [{row['status']}]")
+    lines.append("")
+    lines.append(f"Total selisih: Rp{result['total_selisih']:,.0f}".replace(",", "."))
+    if result["n_bermasalah"] == 0:
+        lines.append("SEMUA REKENING NYAMBUNG - tidak ada selisih yang perlu ditelusuri.")
+    else:
+        lines.append(f"{result['n_bermasalah']} rekening ada selisih/tidak match - perlu ditelusuri manual.")
+    await status_msg.edit_text("\n".join(lines))
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc or not doc.file_name.lower().endswith(".xlsx"):
         await update.message.reply_text("Kirim file .xlsx ya, format lain belum didukung.")
+        return
+
+    if context.user_data.get("kontinuitas_mode"):
+        await handle_kontinuitas_document(update, context, doc)
         return
 
     active_mode = context.user_data.get("multi_mode")
@@ -302,6 +371,11 @@ async def tahunan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("kontinuitas_mode"):
+        context.user_data["kontinuitas_mode"] = False
+        context.user_data["kontinuitas_files"] = []
+        await update.message.reply_text("Mode cek kontinuitas dibatalkan.")
+        return
     mode = context.user_data.get("multi_mode")
     if not mode:
         await update.message.reply_text("Tidak ada proses yang bisa dibatalkan.")
@@ -622,6 +696,7 @@ def main():
     app.add_handler(CommandHandler("lihataturan", lihataturan_command))
     app.add_handler(CommandHandler("lihatalias", lihatalias_command))
     app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
+    app.add_handler(CommandHandler("kontinuitas", kontinuitas_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(error_handler)
     logger.info("Bot rekonsiliasi jalan...")
