@@ -570,9 +570,7 @@ async def tambahkategori_command(update: Update, context: ContextTypes.DEFAULT_T
         return
     except Exception as e:
         logger.error("Gagal tulis ke shared_rules", exc_info=e)
-        await update.message.reply_text(
-            "Gagal terhubung ke database bersama. Cek DATABASE_URL sudah diset dan tabel shared_rules sudah dibuat."
-        )
+        await update.message.reply_text(f"Gagal terhubung ke database bersama: {shared_rules.diagnose_connection_error(e)}")
         return
     sheet_note = f" (khusus rekening mengandung '{sheet_contains}')" if sheet_contains else ""
     await update.message.reply_text(
@@ -599,9 +597,7 @@ async def tambahalias_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         shared_rules.add_employee_alias(short_name, full_name)
     except Exception as e:
         logger.error("Gagal tulis ke shared_rules", exc_info=e)
-        await update.message.reply_text(
-            "Gagal terhubung ke database bersama. Cek DATABASE_URL sudah diset dan tabel shared_rules sudah dibuat."
-        )
+        await update.message.reply_text(f"Gagal terhubung ke database bersama: {shared_rules.diagnose_connection_error(e)}")
         return
     await update.message.reply_text(f"Tersimpan: '{short_name}' -> '{full_name}'.")
 
@@ -611,7 +607,7 @@ async def lihataturan_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         rules = shared_rules.list_category_rules()
     except Exception as e:
         logger.error("Gagal baca shared_rules", exc_info=e)
-        await update.message.reply_text("Gagal terhubung ke database bersama.")
+        await update.message.reply_text(f"Gagal terhubung ke database bersama: {shared_rules.diagnose_connection_error(e)}")
         return
     if not rules:
         await update.message.reply_text("Belum ada aturan kategori tersimpan.")
@@ -632,7 +628,7 @@ async def lihatalias_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         aliases = shared_rules.list_employee_aliases()
     except Exception as e:
         logger.error("Gagal baca shared_rules", exc_info=e)
-        await update.message.reply_text("Gagal terhubung ke database bersama.")
+        await update.message.reply_text(f"Gagal terhubung ke database bersama: {shared_rules.diagnose_connection_error(e)}")
         return
     if not aliases:
         await update.message.reply_text("Belum ada alias pegawai tersimpan.")
@@ -656,7 +652,7 @@ async def hapusaturan_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     except Exception as e:
         logger.error("Gagal tulis ke shared_rules", exc_info=e)
-        await update.message.reply_text("Gagal terhubung ke database bersama.")
+        await update.message.reply_text(f"Gagal terhubung ke database bersama: {shared_rules.diagnose_connection_error(e)}")
         return
     await update.message.reply_text(f"Dihapus: {removed}")
 
