@@ -111,6 +111,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["sahabudin"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
+    {"any": ["modal & setoran pemilik", "modal dan setoran pemilik"], "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
@@ -2164,7 +2165,7 @@ def run_reconciliation(input_path, output_path, with_statements=True):
     wb = openpyxl.load_workbook(input_path)
     REPORT_SHEET_NAMES = {
         "Rekonsiliasi", "Laporan Laba Rugi", "Neraca", "Laporan Arus Kas",
-        "Diagnostik Keseimbangan",
+        "Diagnostik Keseimbangan", "Roster Gaji Bulan Ini",
     }
     account_sheets = [s for s in wb.sheetnames if s not in REPORT_SHEET_NAMES]
 
