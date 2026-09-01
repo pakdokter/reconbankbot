@@ -203,3 +203,21 @@ def remove_category_rule(index):
         conn.close()
     _cache = None
     return removed
+
+
+def diagnose_connection_error(exc):
+    """Terjemahkan exception koneksi/query Postgres jadi pesan diagnosis
+    yang lebih spesifik - dipakai bot.py supaya user langsung tahu apa
+    yang perlu dicek, bukan cuma 'gagal terhubung' generik."""
+    if isinstance(exc, KeyError) and "DATABASE_URL" in str(exc):
+        return "DATABASE_URL belum diset di environment variable reconbot (cek Railway -> project reconbot -> Variables)."
+    text = str(exc).lower()
+    if "password" in text or "authentication" in text:
+        return "Autentikasi Postgres gagal - DATABASE_URL kemungkinan salah atau kredensial sudah berubah (cek connection string terbaru di Railway -> project stoabot -> Postgres -> Variables)."
+    if "does not exist" in text and ("relation" in text or "table" in text):
+        return "Tabel 'shared_rules' belum dibuat di database ini - jalankan seed_shared_rules.sql dulu di Query tab Postgres."
+    if "timeout" in text or "timed out" in text or "could not connect" in text or "connection refused" in text or "could not translate host" in text:
+        return "Tidak bisa konek ke Postgres (timeout/refused/host tidak ditemukan) - cek DATABASE_URL benar dan Postgres masih aktif di Railway."
+    if "no module named" in text and "psycopg2" in text:
+        return "Modul psycopg2 belum terpasang di deployment - cek requirements.txt sudah ter-push ke repo dan reconbot sudah di-redeploy."
+    return f"{type(exc).__name__}: {exc}"
