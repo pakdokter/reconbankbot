@@ -95,6 +95,108 @@ def compute_sheet_k(txns):
     return round(opening, 2), round(running, 2)
 
 
+_MONTH_NAMES_LOWER = {m.lower() for m in rc.MONTHS_ID[1:]}
+_MONTH_ABBR_LOWER = {m[:3].lower() for m in rc.MONTHS_ID[1:]}
+
+
+def account_base_name(sheet_title):
+    """'BCA-887 Januari 2023' -> 'BCA-887'; 'Kas-Buku April 2023' ->
+    'Kas-Buku'. Buang token terakhir kalau itu tahun 4 digit, lalu buang
+    token terakhir lagi kalau itu nama/singkatan bulan."""
+    tokens = sheet_title.split()
+    if tokens and re.fullmatch(r"(19|20)\d{2}", tokens[-1]):
+        tokens = tokens[:-1]
+    if tokens and tokens[-1].lower() in (_MONTH_NAMES_LOWER | _MONTH_ABBR_LOWER):
+        tokens = tokens[:-1]
+    return " ".join(tokens).strip() or sheet_title
+
+
+def check_continuity_between_months(path_bulan_lalu, path_bulan_ini):
+    """Bandingkan Saldo Akhir tiap rekening di file bulan LALU dengan
+    Saldo Awal rekening yang SAMA di file bulan INI - sinyal paling
+    langsung untuk mendeteksi selisih/data hilang di batas antar bulan
+    (mis. Saldo Awal bulan ini diketik manual, tidak nyambung dari Saldo
+    Akhir bulan lalu). Dipakai baik untuk 2 file bulanan biasa, MAUPUN 2
+    laporan kuartalan/tahunan sekaligus (keduanya sama-sama punya sheet
+    rekening dengan nama {base} {bulan} {tahun} - kalau salah satu file
+    adalah laporan kuartalan/tahunan yang TIDAK punya sheet rekening
+    mentah, lempar error jelas).
+
+    Return dict: {"rows": [...], "total_lalu": .., "total_ini": ..,
+    "total_selisih": .., "n_bermasalah": ..}. Tiap baris di "rows":
+    {"rekening", "saldo_akhir_lalu", "saldo_awal_ini", "selisih",
+    "status"} - status "OK" (selisih < Rp1), "SELISIH", atau
+    "HANYA DI BULAN LALU"/"HANYA DI BULAN INI" (rekening tidak match)."""
+    _EXPECTED_HEADER = ["Tanggal", "Keterangan Transaksi", "Kategori Transaksi", "Debit", "Kredit",
+                        "Saldo Kumulatif", "Subjek Transaksi", "Objek Transaksi"]
+
+    def _looks_like_account_sheet(ws):
+        header = [ws.cell(row=1, column=c).value for c in range(1, len(_EXPECTED_HEADER) + 1)]
+        return header == _EXPECTED_HEADER
+
+    def _load_accounts(path):
+        wb = openpyxl.load_workbook(path)
+        account_sheets = [
+            s for s in wb.sheetnames
+            if s not in REPORT_SHEET_NAMES and _looks_like_account_sheet(wb[s])
+        ]
+        if not account_sheets:
+            raise QuarterlyInputError(
+                f"File '{path}' tidak punya sheet rekening mentah yang dikenali (cuma ada: {wb.sheetnames}) "
+                "- pastikan ini file rekonsiliasi BULANAN (Reconciliation Completed), bukan laporan "
+                "kuartalan/tahunan gabungan (yang tidak menyimpan sheet rekening mentah)."
+            )
+        accounts = {}
+        for sn in account_sheets:
+            txns, _ = rc.read_account_sheet(wb[sn])
+            opening, closing = compute_sheet_k(txns)
+            accounts[account_base_name(sn)] = (opening, closing, sn)
+        return accounts
+
+    accounts_lalu = _load_accounts(path_bulan_lalu)
+    accounts_ini = _load_accounts(path_bulan_ini)
+
+    rows = []
+    total_lalu = 0.0
+    total_ini = 0.0
+    n_bermasalah = 0
+    for base in sorted(set(accounts_lalu) | set(accounts_ini)):
+        in_lalu = base in accounts_lalu
+        in_ini = base in accounts_ini
+        if in_lalu and in_ini:
+            saldo_akhir_lalu = accounts_lalu[base][1]
+            saldo_awal_ini = accounts_ini[base][0]
+            selisih = round(saldo_awal_ini - saldo_akhir_lalu, 2)
+            status = "OK" if abs(selisih) < 1 else "SELISIH"
+            total_lalu += saldo_akhir_lalu
+            total_ini += saldo_awal_ini
+        elif in_lalu:
+            saldo_akhir_lalu = accounts_lalu[base][1]
+            saldo_awal_ini = None
+            selisih = None
+            status = "HANYA DI BULAN LALU"
+            total_lalu += saldo_akhir_lalu
+        else:
+            saldo_akhir_lalu = None
+            saldo_awal_ini = accounts_ini[base][0]
+            selisih = None
+            status = "HANYA DI BULAN INI"
+            total_ini += saldo_awal_ini
+        if status != "OK":
+            n_bermasalah += 1
+        rows.append({
+            "rekening": base, "saldo_akhir_lalu": saldo_akhir_lalu,
+            "saldo_awal_ini": saldo_awal_ini, "selisih": selisih, "status": status,
+        })
+    return {
+        "rows": rows,
+        "total_lalu": round(total_lalu, 2),
+        "total_ini": round(total_ini, 2),
+        "total_selisih": round(total_ini - total_lalu, 2),
+        "n_bermasalah": n_bermasalah,
+    }
+
+
 def load_month(path):
     wb = openpyxl.load_workbook(path)
     account_sheets = [s for s in wb.sheetnames if s not in REPORT_SHEET_NAMES]
