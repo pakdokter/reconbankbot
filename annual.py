@@ -358,6 +358,8 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     all_assets = q.merge_asset_lists(carried, scanned)
     rel_assets = q.assets_with_relative_idx(all_assets, months)
     all_hutang = q.merge_hutang_lists(carried_hutang)
+    all_txns_periode = [t for m in months for t in m["all_txns"]]
+    all_hutang = q._auto_update_hutang_payments(all_hutang, all_txns_periode)
 
     income_ref = q.write_quarterly_income_statement(out_wb, months, rel_assets, period_word="Tahunan")
     balance_ref = q.write_quarterly_balance_sheet(
