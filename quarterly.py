@@ -52,7 +52,7 @@ import reconcile as rc
 
 REPORT_SHEET_NAMES = {
     "Rekonsiliasi", "Laporan Laba Rugi", "Neraca", "Laporan Arus Kas",
-    "Diagnostik Keseimbangan",
+    "Diagnostik Keseimbangan", "Roster Gaji Bulan Ini",
 }
 
 
