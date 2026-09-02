@@ -103,7 +103,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"all": ["cashback", "qris"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["cashback mdr"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["cashback jago"], "category": "Biaya Admin Bank", "sheet_contains": "jago"},
-    {"any": ["dr koreksi bunga"], "category": "Biaya Admin Bank", "sheet_contains": None},
+    {"any": ["dr koreksi bunga", "cr koreksi bunga", "koreksi bunga"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["interest on account"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["layanan"], "category": "Belanja Operasional", "sheet_contains": "jago"},
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
@@ -2152,14 +2152,23 @@ def reload_shared_rules():
     _validate_category_override_targets()
 
 
-def run_reconciliation(input_path, output_path, with_statements=True):
+def run_reconciliation(input_path, output_path, with_statements=None):
     """Fungsi utama: rekonsiliasi antar rekening (pencocokan transfer,
     deteksi split/merge, indikasi minus/selisih). Ini yang jalan secara
     default setiap ada file masuk.
 
-    with_statements=True akan menambahkan 3 sheet laporan keuangan
-    (Laba Rugi, Neraca, Arus Kas) - dibuat opsional supaya proses default
-    tetap ringan dan fokus ke rekonsiliasi saja, sesuai kebutuhan.
+    with_statements: None (default) = OTOMATIS - laporan keuangan (Laba
+    Rugi/Neraca/Arus Kas/Diagnostik) HANYA disertakan kalau rekonsiliasi
+    ini benar-benar tidak ada isu (no_issues=True: semua transfer sudah
+    matched, tidak ada indikasi minus, Neraca balanced, tidak ada
+    Kategori Baru). Kalau masih ada isu, HANYA sheet rekening + Rekonsiliasi
+    yang dibuat - user harus beresin isu itu dulu (upload ulang) sebelum
+    laporan keuangan lengkap ikut dibuat, supaya tidak menganalisis angka
+    yang masih berpotensi salah/belum lengkap.
+
+    True/False eksplisit = PAKSA (abaikan status no_issues) - dipakai
+    /laporan kalau user memang mau lihat laporan keuangan meski masih ada
+    isu yang belum beres.
     """
     reload_shared_rules()
     wb = openpyxl.load_workbook(input_path)
@@ -2213,18 +2222,6 @@ def run_reconciliation(input_path, output_path, with_statements=True):
     period_label = detect_period_label(all_txns)
     period_end_label = detect_period_end_date(all_txns, period_label)
 
-    if with_statements:
-        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label, period_month, recon_range)
-        balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label, recon_range)
-        write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
-        write_diagnostic_sheet(wb, sheets_last_row, balance_ref, closing_info_by_sheet)
-        order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas", "Diagnostik Keseimbangan"]
-
-    # urutan sheet: rekening dulu, lalu laporan
-    wb._sheets = [wb[s] for s in order]
-
-    wb.save(output_path)
-
     # match dengan confidence "Not applicable" (teridentifikasi sebagai
     # cicilan pinjaman via Fliptech, BUKAN transfer internal yang genuinely
     # belum ketemu pasangannya) tidak dihitung sebagai unmatched - sudah
@@ -2238,6 +2235,24 @@ def run_reconciliation(input_path, output_path, with_statements=True):
     n_balance_issues = sum(1 for s in balance_status.values() if abs(s["selisih"]) >= 1)
     no_issues = n_transfer_unmatched == 0 and len(minus_flags) == 0 and n_balance_issues == 0
 
+    # with_statements=None (default) -> otomatis ikuti status no_issues:
+    # laporan keuangan lengkap CUMA dibuat kalau rekonsiliasi ini benar-
+    # benar bersih. True/False eksplisit (mis. dari /laporan) memaksa
+    # abaikan status ini.
+    actually_write_statements = no_issues if with_statements is None else with_statements
+
+    if actually_write_statements:
+        income_ws, income_ref = write_income_statement(wb, sheets_last_row, period_label, period_month, recon_range)
+        balance_ws, balance_ref = write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_end_label, recon_range)
+        write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label)
+        write_diagnostic_sheet(wb, sheets_last_row, balance_ref, closing_info_by_sheet)
+        order += [income_ref["sheet"], balance_ref["sheet"], "Laporan Arus Kas", "Diagnostik Keseimbangan"]
+
+    # urutan sheet: rekening dulu, lalu laporan
+    wb._sheets = [wb[s] for s in order]
+
+    wb.save(output_path)
+
     summary = {
         "n_transfer_high": sum(1 for m in matches if m.confidence == "High"),
         "n_transfer_medium": sum(1 for m in matches if m.confidence == "Medium"),
@@ -2248,7 +2263,7 @@ def run_reconciliation(input_path, output_path, with_statements=True):
         "n_minus_flags": len(minus_flags),
         "n_balance_issues": n_balance_issues,
         "n_new_category": len(new_category_flags),
-        "with_statements": with_statements,
+        "with_statements": actually_write_statements,
         "period_label": period_label,
         "no_issues": no_issues,
     }
@@ -2259,6 +2274,11 @@ if __name__ == "__main__":
     import sys
     inp = sys.argv[1] if len(sys.argv) > 1 else "Recon_Januari_2025.xlsx"
     out = sys.argv[2] if len(sys.argv) > 2 else "Recon_Januari_2025_HASIL.xlsx"
-    with_stmt = "--recon-only" not in sys.argv
+    if "--recon-only" in sys.argv:
+        with_stmt = False
+    elif "--laporan" in sys.argv:
+        with_stmt = True
+    else:
+        with_stmt = None  # otomatis: ikuti status no_issues
     s = run_reconciliation(inp, out, with_statements=with_stmt)
     print(s)
