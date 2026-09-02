@@ -469,7 +469,7 @@ def load_hutang_ledger(path):
     return entries
 
 
-def write_buku_hutang(wb, hutang_entries):
+def write_buku_hutang(wb, hutang_entries, excess_payments=None):
     """Sheet 'Buku Hutang' - BUKU MANUAL (bukan dihitung otomatis dari
     transaksi, karena tidak ada kategori baku 'hutang masuk' yang bisa
     dideteksi seperti Belanja Assets untuk Aset Tetap). User isi/update
@@ -524,6 +524,20 @@ def write_buku_hutang(wb, hutang_entries):
     if not hutang_entries:
         ws.cell(row=r, column=1, value="(belum ada catatan hutang - isi manual baris di bawah header kalau ada)")
         ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        r += 1
+
+    if excess_payments:
+        r += 1
+        ws.cell(row=r, column=1, value="PERLU DIISI BARIS BARU - pembayaran berikut cocok nama pemberi pinjaman yang sudah Lunas, kemungkinan untuk hutang BARU dari orang/entitas yang sama:")
+        ws.cell(row=r, column=1).font = Font(bold=True, color="B91C1C")
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=len(headers))
+        ws.row_dimensions[r].height = 28
+        r += 1
+        for ex in excess_payments:
+            ws.cell(row=r, column=1, value=f"{ex['sheet']} baris {ex['row']}: Rp{ex['nominal']:,.0f}".replace(",", "."))
+            ws.cell(row=r, column=1).font = Font(italic=True, color="B45309")
+            r += 1
 
     ws.column_dimensions["A"].width = 16
     ws.column_dimensions["B"].width = 30
@@ -553,55 +567,84 @@ def _auto_update_hutang_payments(hutang_entries, all_txns):
     """Update otomatis 'Total Sudah Dibayar'/'Sisa Hutang'/'Status' tiap
     entri Buku Hutang berdasarkan transaksi berkategori 'Pembayaran
     Hutang' yang BENAR-BENAR ditemukan di bulan-bulan yang sedang
-    diproses laporan ini - supaya tidak lagi harus 100% diisi manual
-    (sebelumnya: Total Sudah Dibayar tetap Rp0 selamanya kalau user tidak
-    update manual, padahal cicilan rutin sudah tercatat sistem lewat
-    kategori Pembayaran Hutang).
+    diproses laporan ini - supaya tidak lagi harus 100% diisi manual.
 
     Pencocokan "pembayaran ini punya siapa" pakai substring sederhana:
     kata di 'Deskripsi / Pemberi Pinjaman' (mis. 'Muh Yani') harus muncul
     di Objek/Keterangan transaksi Pembayaran Hutang (mis. 'MUH YANI SH').
-    Kalau ada BEBERAPA entri hutang match transaksi yang sama (nama
-    tumpang tindih), transaksi itu dihitung ke SEMUA yang match (jarang
-    terjadi kalau nama pemberi pinjaman berbeda-beda) - user tetap bisa
-    override manual kalau perlu, angka hasil auto-update ini cuma titik
-    awal, bukan mengunci kolom.
 
-    Nilai yang ditambahkan HANYA dari bulan-bulan laporan ini (BUKAN
-    menggantikan carry-forward 'total_dibayar' dari laporan sebelumnya -
-    ditambahkan ke situ), supaya kontinuitas antar laporan tetap benar."""
+    Didesain supaya AMAN kalau satu pemberi pinjaman (nama yang sama,
+    mis. 'Muh Yani') muncul di LEBIH DARI SATU baris hutang (hutang lama
+    yang sudah lunas + hutang baru) - SATU transaksi pembayaran TIDAK
+    PERNAH dihitung dobel ke dua entri sekaligus (dilacak per-transaksi
+    secara global, bukan per-entri independen):
+    1. Entri diproses berurutan sesuai urutan baris di Buku Hutang (yang
+       LEBIH LAMA/lebih dulu diprioritaskan duluan menghabiskan jatah
+       pembayaran yang match sebelum entri berikutnya kebagian).
+    2. Entri yang statusnya SUDAH 'Lunas' SEBELUM update ini (dari
+       carry-forward) DILEWATI SAMA SEKALI - tidak ikut menyerap
+       pembayaran yang match, supaya pembayaran itu tetap tersedia buat
+       entri lain (atau jadi kelebihan kalau tidak ada yang cocok).
+    3. Pembayaran yang match tapi nilainya BAKAL bikin overpaid (lebih
+       dari sisa hutang entri itu) dipotong pas sampai Rp0 (Lunas tepat),
+       SISANYA dicoba lagi ke entri berikutnya yang deskripsinya juga
+       match, baru kalau tidak ada yang cocok jadi 'kelebihan' murni.
+
+    Return (hutang_entries_updated, excess_payments) - excess_payments:
+    list of dict {"deskripsi", "sheet", "row", "nominal"} per transaksi
+    (bukan per entri) yang porsinya tidak terpakai entri manapun -
+    kemungkinan besar untuk hutang BARU yang belum ada barisnya, user
+    perlu tambah baris manual."""
     if not hutang_entries:
-        return hutang_entries
-    pembayaran_txns = [t for t in all_txns if t.effective_kategori == "Pembayaran Hutang"]
+        return hutang_entries, []
+    pembayaran_txns = sorted(
+        (t for t in all_txns if t.effective_kategori == "Pembayaran Hutang"),
+        key=lambda t: (rc.coerce_date(t.date) is None, rc.coerce_date(t.date) or rc.datetime.date.max),
+    )
+    sisa_txn = {id(t): abs(t.nominal) for t in pembayaran_txns}
+
     updated = []
     for e in hutang_entries:
         e = dict(e)
         deskripsi = str(e.get("deskripsi") or "").strip().lower()
-        pembayaran_periode_ini = 0.0
-        matched_desc = []
-        if deskripsi:
-            for t in pembayaran_txns:
-                text = f"{t.desc or ''} {t.ket or ''} {t.objek or ''} {t.subjek or ''}".lower()
-                if deskripsi in text:
-                    pembayaran_periode_ini += abs(t.nominal)
-                    matched_desc.append(f"{t.sheet} baris {t.row}: Rp{abs(t.nominal):,.0f}".replace(",", "."))
-        total_dibayar_lama = e.get("total_dibayar") or 0
-        if not isinstance(total_dibayar_lama, (int, float)):
-            total_dibayar_lama = 0
-        total_dibayar_baru = round(total_dibayar_lama + pembayaran_periode_ini, 2)
+        sudah_lunas_sebelum_ini = str(e.get("status") or "").strip().lower() == "lunas"
+        total_dibayar = e.get("total_dibayar") or 0
+        if not isinstance(total_dibayar, (int, float)):
+            total_dibayar = 0
         nilai_pinjaman = e.get("nilai_pinjaman") or 0
-        sisa_hutang_baru = round((nilai_pinjaman if isinstance(nilai_pinjaman, (int, float)) else 0) - total_dibayar_baru, 2)
-        e["total_dibayar"] = total_dibayar_baru
+        if not isinstance(nilai_pinjaman, (int, float)):
+            nilai_pinjaman = 0
+        matched_desc = []
+        if deskripsi and not sudah_lunas_sebelum_ini:
+            for t in pembayaran_txns:
+                if sisa_txn[id(t)] <= 0:
+                    continue
+                text = f"{t.desc or ''} {t.ket or ''} {t.objek or ''} {t.subjek or ''}".lower()
+                if deskripsi not in text:
+                    continue
+                sisa_hutang_sebelum = nilai_pinjaman - total_dibayar
+                if sisa_hutang_sebelum <= 0:
+                    break  # entri ini sudah lunas di tengah proses - berhenti, sisa transaksi coba entri lain
+                dipakai = min(sisa_txn[id(t)], sisa_hutang_sebelum)
+                total_dibayar += dipakai
+                sisa_txn[id(t)] -= dipakai
+                matched_desc.append(f"{t.sheet} baris {t.row}: Rp{dipakai:,.0f}".replace(",", "."))
+        total_dibayar = round(total_dibayar, 2)
+        sisa_hutang_baru = round(nilai_pinjaman - total_dibayar, 2)
+        e["total_dibayar"] = total_dibayar
         e["sisa_hutang"] = sisa_hutang_baru
         e["status"] = "Lunas" if sisa_hutang_baru <= 0 else "Belum Lunas"
-        if pembayaran_periode_ini:
+        if matched_desc:
             catatan_lama = str(e.get("catatan") or "").strip()
-            catatan_auto = (
-                f"[Auto] +Rp{pembayaran_periode_ini:,.0f} terdeteksi periode laporan ini ({', '.join(matched_desc)})."
-            ).replace(",", ".")
+            catatan_auto = f"[Auto] terdeteksi periode laporan ini ({', '.join(matched_desc)})."
             e["catatan"] = f"{catatan_lama} {catatan_auto}".strip()
         updated.append(e)
-    return updated
+
+    excess_payments = [
+        {"deskripsi": None, "sheet": t.sheet, "row": t.row, "nominal": round(sisa_txn[id(t)], 2)}
+        for t in pembayaran_txns if sisa_txn[id(t)] > 0
+    ]
+    return updated, excess_payments
 
 
 def write_buku_aset_tetap(wb, assets, months):
@@ -1976,7 +2019,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     rel_assets = assets_with_relative_idx(all_assets, months)
     all_hutang = merge_hutang_lists(carried_hutang)
     all_txns_periode = [t for m in months for t in m["all_txns"]]
-    all_hutang = _auto_update_hutang_payments(all_hutang, all_txns_periode)
+    all_hutang, hutang_excess = _auto_update_hutang_payments(all_hutang, all_txns_periode)
 
     out_wb = openpyxl.Workbook()
     out_wb.remove(out_wb.active)
@@ -1987,7 +2030,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
     roster_summary = write_roster_gaji(out_wb, months)
     write_analysis_sheet(out_wb, months, rel_assets)
     write_buku_aset_tetap(out_wb, all_assets, months)
-    write_buku_hutang(out_wb, all_hutang)
+    write_buku_hutang(out_wb, all_hutang, hutang_excess)
 
     order = ["Laba Rugi Kuartal", "Neraca Kuartal", "Arus Kas Kuartal",
              "Roster Gaji 3 Bulan", "Analisis & Tren", "Buku Aset Tetap", "Buku Hutang"]
@@ -2002,6 +2045,7 @@ def run_quarterly_report(paths, output_path, carry_forward_paths=None):
         "n_aset_tetap": len(all_assets),
         "n_aset_carry_forward": len(carried),
         "n_hutang": len(all_hutang),
+        "n_hutang_excess": len(hutang_excess),
     }
 
 
