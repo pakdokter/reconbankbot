@@ -359,7 +359,7 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     rel_assets = q.assets_with_relative_idx(all_assets, months)
     all_hutang = q.merge_hutang_lists(carried_hutang)
     all_txns_periode = [t for m in months for t in m["all_txns"]]
-    all_hutang = q._auto_update_hutang_payments(all_hutang, all_txns_periode)
+    all_hutang, hutang_excess = q._auto_update_hutang_payments(all_hutang, all_txns_periode)
 
     income_ref = q.write_quarterly_income_statement(out_wb, months, rel_assets, period_word="Tahunan")
     balance_ref = q.write_quarterly_balance_sheet(
@@ -371,7 +371,7 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
     q.write_analysis_sheet(out_wb, months, rel_assets, period_word="Tahunan")
     write_ringkasan_eksekutif(out_wb, months, income_ref, balance_ref, roster_summary, rel_assets, business_name)
     q.write_buku_aset_tetap(out_wb, all_assets, months)
-    q.write_buku_hutang(out_wb, all_hutang)
+    q.write_buku_hutang(out_wb, all_hutang, hutang_excess)
 
     order = ["Ringkasan Eksekutif", "Laba Rugi Tahunan", "Neraca Tahunan",
              "Saldo Bulanan per Rekening", "Arus Kas Tahunan",
@@ -387,6 +387,7 @@ def run_annual_report(paths, output_path, business_name="Stoa Space", carry_forw
         "n_aset_tetap": len(all_assets),
         "n_aset_carry_forward": len(carried),
         "n_hutang": len(all_hutang),
+        "n_hutang_excess": len(hutang_excess),
     }
 
 
