@@ -175,11 +175,20 @@ def build_caption(summary):
             "'CEK KESEIMBANGAN' di Neraca menandai kalau masih ada selisih "
             "yang harus ditelusuri manual.",
         ]
-    else:
+    elif summary.get("no_issues"):
         lines += [
             "",
             "Belum termasuk Laporan Laba Rugi/Neraca/Arus Kas. Kirim "
             "/laporan kalau butuh itu juga.",
+        ]
+    else:
+        lines += [
+            "",
+            "Laporan Laba Rugi/Neraca/Arus Kas BELUM dibuat - masih ada isu "
+            "di atas yang perlu dibereskan dulu (transfer belum matched/"
+            "indikasi minus/kategori tidak dikenal). Beresi lalu upload "
+            "ulang, atau kirim /laporan kalau tetap mau lihat laporan "
+            "keuangan meski masih ada isu.",
         ]
     return "\n".join(lines)
 
@@ -209,15 +218,18 @@ async def _process_and_reply(update, input_path, with_statements):
                 "Cek apakah nama kolom dan urutan sheet sesuai format baku."
             )
             return
-        # Roster Gaji Bulan Ini (audit telat/tepat waktu) - kegagalan di
-        # sini TIDAK menggagalkan pengiriman file rekonsiliasi utama,
-        # cuma dicatat ke log (fitur tambahan, bukan inti).
-        try:
-            roster_summary = add_roster_to_monthly_report(raw_output_path)
-            summary["n_gaji_telat"] = roster_summary.get("n_telat", 0)
-        except Exception:
-            logger.exception("Gagal menambahkan Roster Gaji Bulan Ini (dilewati, file utama tetap dikirim)")
-        final_filename = build_output_filename(summary, with_statements)
+        # Roster Gaji Bulan Ini (audit telat/tepat waktu) - ikut aturan
+        # yang sama dengan laporan keuangan (with_statements): otomatis
+        # HANYA kalau rekonsiliasi bersih, atau tetap disertakan kalau
+        # user memaksa lewat /laporan. Kegagalan di sini TIDAK
+        # menggagalkan pengiriman file rekonsiliasi utama.
+        if summary.get("with_statements"):
+            try:
+                roster_summary = add_roster_to_monthly_report(raw_output_path)
+                summary["n_gaji_telat"] = roster_summary.get("n_telat", 0)
+            except Exception:
+                logger.exception("Gagal menambahkan Roster Gaji Bulan Ini (dilewati, file utama tetap dikirim)")
+        final_filename = build_output_filename(summary, summary["with_statements"])
         await status_msg.delete()
         with open(raw_output_path, "rb") as f:
             await update.message.reply_document(
@@ -314,11 +326,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_file = await doc.get_file()
     await tg_file.download_to_drive(cache_path)  # simpan buat trigger /laporan nanti
 
-    # Laporan keuangan (Laba Rugi/Neraca/Arus Kas) sekarang SELALU
-    # disertakan langsung - tidak perlu lagi caption "laporan" atau
-    # panggilan /laporan terpisah. /laporan tetap ada (reprocess file
-    # yang sama) untuk kompatibilitas, tapi hasilnya sama saja.
-    await _process_and_reply(update, cache_path, with_statements=True)
+    # Laporan keuangan (Laba Rugi/Neraca/Arus Kas) OTOMATIS disertakan
+    # HANYA kalau rekonsiliasi ini bersih (tidak ada isu) - kalau masih
+    # ada transfer belum matched/indikasi minus/Neraca tidak balanced/
+    # Kategori Baru, cuma sheet rekening + Rekonsiliasi yang dibuat.
+    # Kirim /laporan kalau tetap mau lihat laporan keuangan meski masih
+    # ada isu yang belum beres.
+    await _process_and_reply(update, cache_path, with_statements=None)
 
 
 async def laporan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
