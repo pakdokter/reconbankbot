@@ -112,7 +112,8 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["sahabudin"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["modal & setoran pemilik", "modal dan setoran pemilik"], "category": "Modal & Setoran Pemilik", "sheet_contains": None},
-    {"any": ["hutang", "pinjaman"], "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
+    {"any": ["hutang", "pinjaman"], "none_of": ["bayar hutang", "bayar pinjaman", "cicilan hutang", "cicilan pinjaman"],
+     "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
@@ -593,6 +594,58 @@ def _find_fliptech_loan_companion(src, all_txns):
     return None
 
 
+def _near_miss_candidates(src, all_txns, consumed_ids, max_hasil=3):
+    """Cari transaksi lain (di rekening MANAPUN, tanggal & nominal
+    mendekati src) yang KEMUNGKINAN sebenarnya pasangan src, tapi tidak
+    terpakai find_matches karena satu dan lain hal - dipakai untuk
+    memperkaya alasan 'Needs manual verification' supaya user bisa audit
+    KENAPA bot menolaknya (kategori tidak sesuai, sudah kepakai transaksi
+    lain, dst), bukan cuma 'tidak ditemukan' tanpa penjelasan."""
+    hasil = []
+    for t in all_txns:
+        if t is src or t.sheet == src.sheet:
+            continue
+        if t.nominal == 0:
+            continue
+        date_diff = days_between(src.date, t.date)
+        if date_diff is None or date_diff > TOLERANCI_HARI:
+            continue
+        toleransi = max(TOLERANSI_NOMINAL_ABS, abs(src.nominal) * TOLERANSI_NOMINAL_PERSEN)
+        nominal_diff = abs(abs(src.nominal) - abs(t.nominal))
+        if nominal_diff > toleransi:
+            continue
+        # sejauh ini nominal & tanggal cocok - kenapa tidak terpakai?
+        if not t.is_transfer:
+            sebab = (
+                f"kategori efektifnya '{t.effective_kategori}' (kategori asli: '{t.kategori}') - "
+                "dianggap BUKAN transfer internal, jadi tidak dipertimbangkan sebagai pasangan. "
+                "Cek apakah kategori ini keliru (mis. ada kata kunci di Keterangan yang salah memicu "
+                "aturan kategori tertentu)."
+            )
+        elif id(t) in consumed_ids:
+            sebab = "sudah terpakai sebagai pasangan transaksi transfer lain - satu transaksi tidak bisa jadi pasangan dua transfer sekaligus."
+        else:
+            sebab = "tidak jelas kenapa tidak terpilih - kemungkinan ada kandidat lain yang skornya lebih baik."
+        rp_nominal = f"{abs(t.nominal):,.0f}".replace(",", ".")
+        rp_diff = f"{nominal_diff:,.0f}".replace(",", ".")
+        hasil.append(
+            f"{t.sheet} baris {t.row} (\"{t.desc}\", Rp{rp_nominal}, selisih tanggal {date_diff} hari, "
+            f"selisih nominal Rp{rp_diff}): {sebab}"
+        )
+        if len(hasil) >= max_hasil:
+            break
+    return hasil
+
+
+def _format_near_miss_note(near_miss_list):
+    if not near_miss_list:
+        return ""
+    if len(near_miss_list) == 1:
+        return " KANDIDAT DEKAT ditemukan: " + near_miss_list[0]
+    bullets = "; ".join(f"({i + 1}) {n}" for i, n in enumerate(near_miss_list))
+    return f" {len(near_miss_list)} KANDIDAT DEKAT ditemukan: {bullets}"
+
+
 def find_matches(all_txns, sheet_names):
     """Untuk setiap transaksi bertanda transfer internal, cari pasangan di
     rekening tujuan (berdasarkan Subjek/Objek) dalam jendela +-30 hari,
@@ -753,6 +806,7 @@ def find_matches(all_txns, sheet_names):
                         f"({counterpart_hint or 'tidak teridentifikasi dari Subjek/Objek'}). "
                         "Kemungkinan: dana masih dalam perjalanan (in-transit), tercatat di "
                         "bulan berikutnya, atau salah kategori."
+                        + _format_near_miss_note(_near_miss_candidates(src, all_txns, consumed_ids))
                     ),
                 )
             )
