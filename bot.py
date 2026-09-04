@@ -50,6 +50,7 @@ from telegram.error import Conflict, NetworkError
 from reconcile import run_reconciliation
 import reconcile as rc
 from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report, check_continuity_between_months
+from kasir_audit import run_kasir_audit, parse_pos_sales, KasirAuditError, _looks_like_account_sheet
 from annual import run_annual_report, AnnualInputError
 import shared_rules
 
@@ -304,10 +305,100 @@ async def handle_kontinuitas_document(update: Update, context: ContextTypes.DEFA
     await status_msg.edit_text("\n".join(lines))
 
 
+async def auditkasir_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fitur MANUAL (tidak otomatis, harus di-trigger) - audit silang
+    total penjualan mesin kasir (POS) vs rekap keuangan (bank/kas) per
+    metode bayar. Terima file 'Detail Penjualan' (export POS) dan file
+    Rekap (hasil rekonsiliasi bulanan biasa) dalam urutan BEBAS - jenis
+    file dideteksi otomatis dari strukturnya, bukan dari nama file."""
+    context.user_data["auditkasir_mode"] = True
+    context.user_data["auditkasir_pos_files"] = []
+    context.user_data["auditkasir_rekap_files"] = []
+    await update.message.reply_text(
+        "Mode audit kasir aktif. Upload file 'Detail Penjualan' (export mesin kasir) DAN file "
+        "Rekap (hasil rekonsiliasi bulanan) - urutan bebas, boleh diselang-seling, jenis file "
+        "dideteksi otomatis. Minimal 1 file masing-masing jenis.\n\n"
+        "Kirim /selesai kalau sudah semua file terupload, atau /batal untuk keluar dari mode ini."
+    )
+
+
+async def handle_auditkasir_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    user_id = update.effective_user.id
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"auditkasir_{user_id}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    pos_files = context.user_data.setdefault("auditkasir_pos_files", [])
+    rekap_files = context.user_data.setdefault("auditkasir_rekap_files", [])
+    dest = os.path.join(tmp_dir, f"file_{len(pos_files) + len(rekap_files) + 1}.xlsx")
+    tg_file = await doc.get_file()
+    await tg_file.download_to_drive(dest)
+
+    # deteksi jenis file dari strukturnya, bukan nama file
+    try:
+        parse_pos_sales(dest)
+        pos_files.append(dest)
+        jenis = "Detail Penjualan (POS)"
+    except KasirAuditError:
+        import openpyxl
+        wb = openpyxl.load_workbook(dest)
+        if any(_looks_like_account_sheet(wb[s]) for s in wb.sheetnames):
+            rekap_files.append(dest)
+            jenis = "Rekap keuangan"
+        else:
+            os.remove(dest)
+            await update.message.reply_text(
+                f"File '{doc.file_name}' tidak dikenali sebagai Detail Penjualan POS maupun Rekap "
+                "keuangan - dilewati. Pastikan format filenya sesuai export POS atau hasil rekonsiliasi bulanan."
+            )
+            return
+    await update.message.reply_text(
+        f"Diterima sebagai {jenis} ({len(pos_files)} POS, {len(rekap_files)} Rekap terkumpul). "
+        "Lanjut upload atau kirim /selesai."
+    )
+
+
+async def _process_auditkasir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pos_files = context.user_data.get("auditkasir_pos_files", [])
+    rekap_files = context.user_data.get("auditkasir_rekap_files", [])
+    user_id = update.effective_user.id
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"auditkasir_{user_id}")
+    status_msg = await update.message.reply_text("Menjalankan audit kasir, tunggu sebentar...")
+    output_path = os.path.join(tmp_dir, "Audit_Kasir.xlsx")
+    try:
+        summary = run_kasir_audit(pos_files, rekap_files, output_path)
+    except KasirAuditError as e:
+        await status_msg.edit_text(f"Gagal: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        context.user_data["auditkasir_mode"] = False
+        return
+    except Exception as e:
+        logger.exception("Gagal menjalankan audit kasir")
+        await status_msg.edit_text(f"Gagal memproses: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        context.user_data["auditkasir_mode"] = False
+        return
+    context.user_data["auditkasir_mode"] = False
+    context.user_data["auditkasir_pos_files"] = []
+    context.user_data["auditkasir_rekap_files"] = []
+    caption = (
+        f"Audit kasir selesai - {summary['n_bulan']} bulan, {summary['n_transaksi_pos']} transaksi POS.\n"
+        f"Refund: {summary['n_refund']} transaksi, total Rp{summary['total_refund']:,.0f}.\n"
+        f"Belum lunas (dikecualikan dari audit): {summary['n_belum_lunas']} transaksi.\n\n"
+        "Cek sheet 'Ringkasan Audit Kasir' - baris merah/kuning perlu ditelusuri manual."
+    ).replace(",", ".")
+    await status_msg.delete()
+    with open(output_path, "rb") as f:
+        await update.message.reply_document(document=f, filename="Audit_Kasir.xlsx", caption=caption)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc or not doc.file_name.lower().endswith(".xlsx"):
         await update.message.reply_text("Kirim file .xlsx ya, format lain belum didukung.")
+        return
+
+    if context.user_data.get("auditkasir_mode"):
+        await handle_auditkasir_document(update, context, doc)
         return
 
     if context.user_data.get("kontinuitas_mode"):
@@ -385,6 +476,12 @@ async def tahunan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("auditkasir_mode"):
+        context.user_data["auditkasir_mode"] = False
+        context.user_data["auditkasir_pos_files"] = []
+        context.user_data["auditkasir_rekap_files"] = []
+        await update.message.reply_text("Mode audit kasir dibatalkan.")
+        return
     if context.user_data.get("kontinuitas_mode"):
         context.user_data["kontinuitas_mode"] = False
         context.user_data["kontinuitas_files"] = []
@@ -407,7 +504,19 @@ async def selesai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Buat kasus laporan PERTAMA kalinya - tidak ada laporan sebelumnya
     untuk di-carry-forward, jadi trigger manual dengan file bulanan yang
     sudah ada tanpa menunggu file carry-forward yang memang tidak akan
-    pernah datang."""
+    pernah datang. Juga dipakai untuk menutup sesi /auditkasir (jumlah
+    file variabel, tidak ada carry-forward tetap)."""
+    if context.user_data.get("auditkasir_mode"):
+        pos_files = context.user_data.get("auditkasir_pos_files", [])
+        rekap_files = context.user_data.get("auditkasir_rekap_files", [])
+        if not pos_files or not rekap_files:
+            await update.message.reply_text(
+                f"Baru ada {len(pos_files)} file POS dan {len(rekap_files)} file Rekap - butuh "
+                "minimal 1 dari masing-masing jenis sebelum kirim /selesai."
+            )
+            return
+        await _process_auditkasir(update, context)
+        return
     mode = context.user_data.get("multi_mode")
     if not mode:
         await update.message.reply_text("Tidak ada proses laporan kuartalan/tahunan yang sedang berjalan.")
@@ -707,6 +816,7 @@ def main():
     app.add_handler(CommandHandler("lihatalias", lihatalias_command))
     app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
     app.add_handler(CommandHandler("kontinuitas", kontinuitas_command))
+    app.add_handler(CommandHandler("auditkasir", auditkasir_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(error_handler)
     logger.info("Bot rekonsiliasi jalan...")
