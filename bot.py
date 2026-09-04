@@ -144,6 +144,37 @@ def _is_carry_forward_file(path):
         return False
 
 
+CMD_LIST_TEXT = """*Daftar Perintah Bot*
+
+*Rekonsiliasi bulanan (dasar)*
+/start — pesan pembuka & cara pakai
+Upload file .xlsx — proses rekonsiliasi bulanan langsung (tanpa command). Laporan keuangan lengkap otomatis ikut HANYA kalau tidak ada isu (semua transfer matched, Neraca balanced, tidak ada Kategori Baru).
+/laporan — proses ulang file terakhir yang diupload, PAKSA sertakan laporan keuangan meski masih ada isu
+
+*Laporan kuartalan & tahunan*
+/kuartal — mulai sesi: upload 3 file bulanan berurutan + (opsional) 1 file carry-forward dari kuartal sebelumnya
+/tahunan — mulai sesi: upload 12 file bulanan berurutan + (opsional) 1 file carry-forward dari tahun sebelumnya
+/selesai — tutup sesi /kuartal, /tahunan, atau /auditkasir yang sedang berjalan dan mulai proses
+/batal — batalkan sesi /kuartal, /tahunan, /kontinuitas, atau /auditkasir yang sedang berjalan
+
+*Audit tambahan*
+/kontinuitas — bandingkan Saldo Akhir file bulan lalu dengan Saldo Awal file bulan ini (deteksi selisih di batas antar bulan). Upload 2 file berurutan setelah command ini.
+/auditkasir — audit silang mesin kasir (POS) vs rekap keuangan, termasuk asumsi settlement QRIS/kartu H+1. Upload file Detail Penjualan + Rekap (urutan bebas, jenis dideteksi otomatis), lalu /selesai.
+
+*Kelola kategori & alias pegawai (butuh Postgres tersambung)*
+/tambahkategori kata1, kata2 => Kategori Tujuan — tambah aturan kategori baru
+/tambahalias alias => Nama Lengkap — tambah alias pegawai baru
+/lihataturan — lihat semua aturan kategori yang aktif
+/lihatalias — lihat semua alias pegawai yang aktif
+/hapusaturan <nomor> — hapus satu aturan kategori (nomor sesuai /lihataturan)
+
+/cmd — tampilkan daftar ini lagi"""
+
+
+async def cmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(CMD_LIST_TEXT, parse_mode=ParseMode.MARKDOWN)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME, parse_mode=ParseMode.MARKDOWN)
 
@@ -817,6 +848,7 @@ def main():
     app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
     app.add_handler(CommandHandler("kontinuitas", kontinuitas_command))
     app.add_handler(CommandHandler("auditkasir", auditkasir_command))
+    app.add_handler(CommandHandler("cmd", cmd_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(error_handler)
     logger.info("Bot rekonsiliasi jalan...")
