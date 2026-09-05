@@ -50,7 +50,7 @@ from telegram.error import Conflict, NetworkError
 from reconcile import run_reconciliation
 import reconcile as rc
 from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report, check_continuity_between_months
-from kasir_audit import run_kasir_audit, parse_pos_sales, KasirAuditError, _looks_like_account_sheet
+from kasir_audit import run_kasir_audit, parse_pos_sales, KasirAuditError, _looks_like_account_sheet, looks_like_interpretasi_file
 from annual import run_annual_report, AnnualInputError
 import shared_rules
 
@@ -159,7 +159,7 @@ Upload file .xlsx — proses rekonsiliasi bulanan langsung (tanpa command). Lapo
 
 *Audit tambahan*
 /kontinuitas — bandingkan Saldo Akhir file bulan lalu dengan Saldo Awal file bulan ini (deteksi selisih di batas antar bulan). Upload 2 file berurutan setelah command ini.
-/auditkasir — audit silang mesin kasir (POS) vs rekap keuangan, termasuk asumsi settlement QRIS/kartu H+1. Upload file Detail Penjualan + Rekap (urutan bebas, jenis dideteksi otomatis), lalu /selesai.
+/auditkasir — audit silang mesin kasir (POS) vs rekap keuangan, termasuk asumsi settlement QRIS/kartu H+1 (atau tanggal settle eksplisit kalau pakai file Interpretasi Penjualan). Upload file penjualan (Detail Penjualan POS atau Interpretasi Penjualan) + Rekap (urutan bebas, jenis dideteksi otomatis), lalu /selesai.
 
 *Kelola kategori & alias pegawai (butuh Postgres tersambung)*
 /tambahkategori kata1, kata2 => Kategori Tujuan — tambah aturan kategori baru
@@ -339,16 +339,20 @@ async def handle_kontinuitas_document(update: Update, context: ContextTypes.DEFA
 async def auditkasir_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Fitur MANUAL (tidak otomatis, harus di-trigger) - audit silang
     total penjualan mesin kasir (POS) vs rekap keuangan (bank/kas) per
-    metode bayar. Terima file 'Detail Penjualan' (export POS) dan file
-    Rekap (hasil rekonsiliasi bulanan biasa) dalam urutan BEBAS - jenis
-    file dideteksi otomatis dari strukturnya, bukan dari nama file."""
+    metode bayar. Terima 3 jenis file dalam urutan BEBAS - jenis file
+    dideteksi otomatis dari strukturnya, bukan dari nama file:
+    1. Detail Penjualan (export POS mentah)
+    2. Interpretasi Penjualan (per-transaksi, sudah ada tanggal settle
+       eksplisit - lebih presisi daripada asumsi H+1 kalau tersedia)
+    3. Rekap (hasil rekonsiliasi bulanan biasa) - WAJIB minimal 1."""
     context.user_data["auditkasir_mode"] = True
     context.user_data["auditkasir_pos_files"] = []
     context.user_data["auditkasir_rekap_files"] = []
+    context.user_data["auditkasir_interp_files"] = []
     await update.message.reply_text(
-        "Mode audit kasir aktif. Upload file 'Detail Penjualan' (export mesin kasir) DAN file "
-        "Rekap (hasil rekonsiliasi bulanan) - urutan bebas, boleh diselang-seling, jenis file "
-        "dideteksi otomatis. Minimal 1 file masing-masing jenis.\n\n"
+        "Mode audit kasir aktif. Upload file penjualan (Detail Penjualan POS mentah ATAU Interpretasi "
+        "Penjualan) DAN file Rekap (hasil rekonsiliasi bulanan) - urutan bebas, boleh diselang-seling, "
+        "jenis file dideteksi otomatis. Minimal 1 file Rekap DAN minimal 1 file penjualan.\n\n"
         "Kirim /selesai kalau sudah semua file terupload, atau /batal untuk keluar dari mode ini."
     )
 
@@ -359,43 +363,51 @@ async def handle_auditkasir_document(update: Update, context: ContextTypes.DEFAU
     os.makedirs(tmp_dir, exist_ok=True)
     pos_files = context.user_data.setdefault("auditkasir_pos_files", [])
     rekap_files = context.user_data.setdefault("auditkasir_rekap_files", [])
-    dest = os.path.join(tmp_dir, f"file_{len(pos_files) + len(rekap_files) + 1}.xlsx")
+    interp_files = context.user_data.setdefault("auditkasir_interp_files", [])
+    dest = os.path.join(tmp_dir, f"file_{len(pos_files) + len(rekap_files) + len(interp_files) + 1}.xlsx")
     tg_file = await doc.get_file()
     await tg_file.download_to_drive(dest)
 
-    # deteksi jenis file dari strukturnya, bukan nama file
+    # deteksi jenis file dari strukturnya, bukan nama file - Interpretasi
+    # Penjualan dicek SEBELUM Rekap karena strukturnya (header standar
+    # rekonsiliasi) juga akan lolos cek _looks_like_account_sheet
     try:
         parse_pos_sales(dest)
         pos_files.append(dest)
-        jenis = "Detail Penjualan (POS)"
+        jenis = "Detail Penjualan (POS mentah)"
     except KasirAuditError:
         import openpyxl
-        wb = openpyxl.load_workbook(dest)
-        if any(_looks_like_account_sheet(wb[s]) for s in wb.sheetnames):
-            rekap_files.append(dest)
-            jenis = "Rekap keuangan"
+        if looks_like_interpretasi_file(dest):
+            interp_files.append(dest)
+            jenis = "Interpretasi Penjualan"
         else:
-            os.remove(dest)
-            await update.message.reply_text(
-                f"File '{doc.file_name}' tidak dikenali sebagai Detail Penjualan POS maupun Rekap "
-                "keuangan - dilewati. Pastikan format filenya sesuai export POS atau hasil rekonsiliasi bulanan."
-            )
-            return
+            wb = openpyxl.load_workbook(dest)
+            if any(_looks_like_account_sheet(wb[s]) for s in wb.sheetnames):
+                rekap_files.append(dest)
+                jenis = "Rekap keuangan"
+            else:
+                os.remove(dest)
+                await update.message.reply_text(
+                    f"File '{doc.file_name}' tidak dikenali sebagai Detail Penjualan POS, Interpretasi "
+                    "Penjualan, maupun Rekap keuangan - dilewati."
+                )
+                return
     await update.message.reply_text(
-        f"Diterima sebagai {jenis} ({len(pos_files)} POS, {len(rekap_files)} Rekap terkumpul). "
-        "Lanjut upload atau kirim /selesai."
+        f"Diterima sebagai {jenis} ({len(pos_files)} POS, {len(interp_files)} Interpretasi, "
+        f"{len(rekap_files)} Rekap terkumpul). Lanjut upload atau kirim /selesai."
     )
 
 
 async def _process_auditkasir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pos_files = context.user_data.get("auditkasir_pos_files", [])
     rekap_files = context.user_data.get("auditkasir_rekap_files", [])
+    interp_files = context.user_data.get("auditkasir_interp_files", [])
     user_id = update.effective_user.id
     tmp_dir = os.path.join(tempfile.gettempdir(), f"auditkasir_{user_id}")
     status_msg = await update.message.reply_text("Menjalankan audit kasir, tunggu sebentar...")
     output_path = os.path.join(tmp_dir, "Audit_Kasir.xlsx")
     try:
-        summary = run_kasir_audit(pos_files, rekap_files, output_path)
+        summary = run_kasir_audit(pos_files, rekap_files, output_path, interp_paths=interp_files)
     except KasirAuditError as e:
         await status_msg.edit_text(f"Gagal: {e}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -410,6 +422,7 @@ async def _process_auditkasir(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["auditkasir_mode"] = False
     context.user_data["auditkasir_pos_files"] = []
     context.user_data["auditkasir_rekap_files"] = []
+    context.user_data["auditkasir_interp_files"] = []
     caption = (
         f"Audit kasir selesai - {summary['n_bulan']} bulan, {summary['n_transaksi_pos']} transaksi POS.\n"
         f"Refund: {summary['n_refund']} transaksi, total Rp{summary['total_refund']:,.0f}.\n"
@@ -511,6 +524,7 @@ async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["auditkasir_mode"] = False
         context.user_data["auditkasir_pos_files"] = []
         context.user_data["auditkasir_rekap_files"] = []
+        context.user_data["auditkasir_interp_files"] = []
         await update.message.reply_text("Mode audit kasir dibatalkan.")
         return
     if context.user_data.get("kontinuitas_mode"):
@@ -540,10 +554,12 @@ async def selesai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("auditkasir_mode"):
         pos_files = context.user_data.get("auditkasir_pos_files", [])
         rekap_files = context.user_data.get("auditkasir_rekap_files", [])
-        if not pos_files or not rekap_files:
+        interp_files = context.user_data.get("auditkasir_interp_files", [])
+        if not (pos_files or interp_files) or not rekap_files:
             await update.message.reply_text(
-                f"Baru ada {len(pos_files)} file POS dan {len(rekap_files)} file Rekap - butuh "
-                "minimal 1 dari masing-masing jenis sebelum kirim /selesai."
+                f"Baru ada {len(pos_files)} file POS mentah, {len(interp_files)} Interpretasi Penjualan, "
+                f"dan {len(rekap_files)} file Rekap - butuh minimal 1 file Rekap DAN minimal 1 file "
+                "penjualan (POS mentah atau Interpretasi) sebelum kirim /selesai."
             )
             return
         await _process_auditkasir(update, context)
