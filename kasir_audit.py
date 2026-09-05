@@ -2,30 +2,31 @@
 MANUAL, tidak jalan otomatis, harus di-trigger via /auditkasir (bot.py)
 atau dipanggil langsung sebagai skrip.
 
-KENAPA AGREGASI BULANAN, BUKAN PENCOCOKAN PER TRANSAKSI/HARIAN:
+KENAPA AGREGASI BULANAN/HARIAN GABUNGAN, BUKAN PENCOCOKAN PER TRANSAKSI
+ATAU DIPISAH PER REKENING BANK:
 1. Data bank (Rekap) tidak menyimpan referensi transaksi POS (No
    Transaksi kasir) - cuma "Jam ...; Teller/User ID" dan kadang kode
    settlement (QRISOnUs/QRISOffUs/MID). Tidak ada kunci unik untuk
    mencocokkan satu transaksi kasir ke satu baris bank secara presisi.
 2. QRIS/kartu settle ke rekening H+1 atau lebih lambat, dan TIDAK SELALU
    HARIAN (bisa beberapa hari terkumpul jadi satu setoran) - dikonfirmasi
-   user. Pencocokan harian akan penuh false-positive selisih di
-   perbatasan settlement yang sebenarnya normal.
-3. Yang bisa diaudit secara andal: TOTAL BULANAN per kategori metode
-   bayar (Cash/QRIS BRI/QRIS BCA/Kartu) - kalau selisihnya kecil (relatif
-   terhadap volume), settlement timing yang menjelaskan. Kalau selisihnya
-   besar, itu sinyal kuat ada salah kategori/metode/refund yang tidak
-   tercatat rapi/uang hilang, perlu ditelusuri manual.
+   user.
+3. PENTING (dikonfirmasi user): SEMUA transaksi berkategori 'Penjualan'
+   yang masuk ke rekening BANK MANAPUN (bukan Kas-Buku) otomatis
+   dianggap penjualan via QRIS - TIDAK dipisah/dicocokkan per rekening
+   bank tertentu (mis. BRI-507 khusus utk QRIS BRI, BCA-887 khusus utk
+   QRIS BCA), karena settlement bisa masuk ke rekening manapun, tidak
+   selalu sesuai provider QRIS yang dipakai pembeli. Jadi audit ini
+   membandingkan 2 pool saja: Cash (POS) vs Kas-Buku (bank), dan
+   Non-Tunai gabungan (QRIS BRI+QRIS BCA+Kartu dari POS) vs GABUNGAN
+   'Penjualan' di SEMUA rekening bank selain Kas-Buku.
+4. 'Penjualan Langsung' - transaksi bank berkategori 'Penjualan' yang
+   ditandai user (lewat kata 'Penjualan Langsung' di Keterangan/Objek/
+   dst) sebagai penjualan yang diverifikasi manual, BUKAN dari POS -
+   dikecualikan dari pool Non-Tunai (tidak akan pernah ada padanannya di
+   data POS), ditampilkan terpisah sebagai informasi saja.
 
 KETERBATASAN yang harus disadari user:
-- Card (Kartu Debit/Kredit - BRI) dan sebagian QRIS BRI SAMA-SAMA settle
-  ke rekening BRI-507 tanpa penanda konsisten yang membedakan keduanya di
-  sisi bank (kadang ada teks 'QRISOnUs/QRISOffUs', kadang tidak) - jadi
-  audit ini membandingkan GABUNGAN (QRIS BRI + Kartu BRI dari POS) vs
-  TOTAL 'Penjualan' di BRI-507 (bank), bukan dipisah per metode.
-- QRIS BCA vs 'Penjualan' di BCA-887 (bank) - dari data yang diperiksa,
-  semua 'Penjualan' BCA-887 memang muncul terkait QRIS (pola 'MID:...QR:'
-  atau kode settlement harian), jadi perbandingan 1:1 masuk akal.
 - Beberapa hari di awal/akhir bulan WAJAR meleset ke bulan
   sebelum/sesudahnya karena jeda settlement - laporan ini menandai hari
   pertama/terakhir tiap bulan sebagai konteks, bukan tuduhan kesalahan.
@@ -295,11 +296,26 @@ def _looks_like_account_sheet(ws):
 
 def aggregate_bank_penjualan(rekap_paths):
     """Untuk tiap file Rekap (rekonsiliasi bulanan biasa), jumlahkan
-    transaksi berkategori efektif 'Penjualan' per (bulan, nama dasar
-    rekening). Pakai reconcile.py langsung supaya konsisten dengan
-    logika kategorisasi yang sama dipakai rekonsiliasi normal."""
+    transaksi berkategori efektif 'Penjualan' per (bulan, kelompok).
+    Pakai reconcile.py langsung supaya konsisten dengan logika
+    kategorisasi yang sama dipakai rekonsiliasi normal.
+
+    PENTING (dikonfirmasi user): SEMUA 'Penjualan' yang masuk ke rekening
+    BANK manapun (bukan Kas-Buku) otomatis dianggap penjualan via QRIS -
+    TIDAK dipisah per rekening bank (mis. BRI-507 vs BCA-887), karena
+    settlement QRIS bisa masuk ke rekening manapun, tidak selalu sesuai
+    provider QRIS yang dipakai pembeli. Jadi dikelompokkan jadi 2 pool
+    saja: 'Kas-Buku' (penjualan tunai) dan 'Non-Tunai (Bank)' (gabungan
+    SEMUA rekening bank lain, mewakili seluruh penjualan QRIS/kartu).
+
+    'Penjualan Langsung' (kode di Keterangan/Objek/dst yang ditandai user
+    saat verifikasi manual) DIKECUALIKAN dari kedua pool di atas -
+    ini penjualan yang TIDAK lewat POS sama sekali (makanya kategorinya
+    tetap 'Penjualan' apa adanya, tidak diubah), jadi tidak akan pernah
+    match dengan data POS manapun. Dihitung terpisah supaya kelihatan di
+    laporan, bukan dianggap sebagai selisih yang mencurigakan."""
     agg = {}
-    daily = {}  # (bulan, rekening, tanggal) -> total, buat cek settlement lintas bulan
+    daily = {}  # (kelompok, tanggal) -> total, buat cek settlement lintas bulan
     for path in rekap_paths:
         wb = openpyxl.load_workbook(path)
         account_sheets = [s for s in wb.sheetnames if _looks_like_account_sheet(wb[s])]
@@ -320,21 +336,18 @@ def aggregate_bank_penjualan(rekap_paths):
                 bulan = _bulan_label_dari_tanggal(tgl) if tgl else None
                 if bulan is None:
                     continue
-                key = (bulan, base)
+                text = f"{t.desc or ''} {t.ket or ''} {t.objek or ''} {t.subjek or ''}".lower()
+                if "penjualan langsung" in text:
+                    kelompok = "Penjualan Langsung (manual, bukan dari POS)"
+                elif base == "Kas-Buku":
+                    kelompok = "Kas-Buku"
+                else:
+                    kelompok = "Non-Tunai (Bank)"
+                key = (bulan, kelompok)
                 agg[key] = agg.get(key, 0) + t.nominal
-                dkey = (base, tgl)
+                dkey = (kelompok, tgl)
                 daily[dkey] = daily.get(dkey, 0) + t.nominal
     return agg, daily
-
-
-# Rekening bank tujuan settlement per kategori metode POS non-tunai -
-# lihat catatan keterbatasan di docstring modul ini.
-_SETTLEMENT_TARGET = {
-    "QRIS BRI": "BRI-507",
-    "Kartu BRI": "BRI-507",
-    "QRIS BCA": "BCA-887",
-}
-
 
 def _write_harian_sheet(wb, title, pos_daily, bank_daily, bank_rekening, all_dates, shift_hari,
                           catatan_header):
@@ -487,28 +500,30 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
         c.alignment = Alignment(wrap_text=True, vertical="center")
     r += 1
 
-    metode_order = ["Cash", "QRIS BCA"]
+    kelompok_order = ["Kas-Buku", "Non-Tunai (Bank)"]
+    kelompok_pos_kategori = {
+        "Kas-Buku": ["Cash"],
+        "Non-Tunai (Bank)": ["QRIS BRI", "QRIS BCA", "Kartu BRI"],
+    }
+    kelompok_label = {"Kas-Buku": "Cash", "Non-Tunai (Bank)": "Non-Tunai (Bank)"}
     row_i = 0
     for bulan in bulan_list:
-        for metode in metode_order:
-            pos = pos_agg.get((bulan, metode))
-            kotor = pos["kotor"] if pos else 0
-            refund = pos["refund"] if pos else 0
+        for kelompok in kelompok_order:
+            kotor = refund = n = 0
+            for m in kelompok_pos_kategori[kelompok]:
+                pos = pos_agg.get((bulan, m))
+                if pos:
+                    kotor += pos["kotor"]
+                    refund += pos["refund"]
+                    n += pos["n"]
             bersih = kotor - refund
-            n = pos["n"] if pos else 0
-            if metode == "Cash":
-                bank_val = bank_agg.get((bulan, "Kas-Buku"))
-                catatan_target = "Kas-Buku"
-            else:
-                target = _SETTLEMENT_TARGET.get(metode)
-                bank_val = bank_agg.get((bulan, target)) if target else None
-                catatan_target = target or "-"
-            if pos is None and bank_val is None:
-                continue  # metode ini tidak muncul sama sekali bulan ini di kedua sisi
+            bank_val = bank_agg.get((bulan, kelompok))
+            if n == 0 and bank_val is None:
+                continue
             selisih = (bersih - bank_val) if bank_val is not None else None
             pct = (abs(selisih) / bersih * 100) if (selisih is not None and bersih) else None
             if bank_val is None:
-                catatan = f"Tidak ada data Rekap untuk {catatan_target} bulan ini."
+                catatan = f"Tidak ada data Rekap untuk kelompok '{kelompok}' bulan ini."
                 fill = WARN_FILL
             elif pct is None:
                 catatan = "-"
@@ -523,7 +538,7 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
                 catatan = "SELISIH BESAR - kemungkinan salah kategori/metode, refund tidak tercatat rapi, atau setoran belum masuk. Perlu ditelusuri manual."
                 fill = BAD_FILL
             ws.cell(row=r, column=1, value=bulan)
-            ws.cell(row=r, column=2, value=f"{metode} ({n} transaksi)")
+            ws.cell(row=r, column=2, value=f"{kelompok_label[kelompok]} ({n} transaksi)")
             ws.cell(row=r, column=3, value=kotor)
             ws.cell(row=r, column=4, value=refund)
             ws.cell(row=r, column=5, value=bersih)
@@ -540,51 +555,29 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
             row_i += 1
             r += 1
 
-    # QRIS BRI + Kartu BRI digabung (lihat keterbatasan di docstring) -
-    # baris terpisah, dibangun ulang bersih di sini
-    r += 1
-    ws.cell(row=r, column=1, value="Rincian gabungan non-tunai BRI (QRIS BRI + Kartu BRI vs total Penjualan BRI-507):")
-    ws.cell(row=r, column=1).font = Font(bold=True, italic=True)
-    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=9)
-    r += 1
-    for bulan in bulan_list:
-        qris = pos_agg.get((bulan, "QRIS BRI"), {"kotor": 0, "refund": 0, "n": 0})
-        kartu = pos_agg.get((bulan, "Kartu BRI"), {"kotor": 0, "refund": 0, "n": 0})
-        kotor = qris["kotor"] + kartu["kotor"]
-        refund = qris["refund"] + kartu["refund"]
-        bersih = kotor - refund
-        n = qris["n"] + kartu["n"]
-        bank_val = bank_agg.get((bulan, "BRI-507"))
-        if bank_val is None and n == 0:
-            continue
-        selisih = (bersih - bank_val) if bank_val is not None else None
-        pct = (abs(selisih) / bersih * 100) if (selisih is not None and bersih) else None
-        if bank_val is None:
-            catatan, fill = f"Tidak ada data Rekap untuk BRI-507 bulan ini.", WARN_FILL
-        elif pct is None:
-            catatan, fill = "-", None
-        elif pct < 5:
-            catatan, fill = "Selisih kecil, kemungkinan besar jeda settlement normal.", GOOD_FILL
-        elif pct < 15:
-            catatan, fill = "Selisih cukup besar - cek transaksi awal/akhir bulan atau refund.", WARN_FILL
-        else:
-            catatan, fill = "SELISIH BESAR - perlu ditelusuri manual.", BAD_FILL
-        ws.cell(row=r, column=1, value=bulan)
-        ws.cell(row=r, column=2, value=f"QRIS BRI + Kartu BRI ({n} transaksi)")
-        ws.cell(row=r, column=3, value=kotor)
-        ws.cell(row=r, column=4, value=refund)
-        ws.cell(row=r, column=5, value=bersih)
-        ws.cell(row=r, column=6, value=bank_val if bank_val is not None else "-")
-        ws.cell(row=r, column=7, value=selisih if selisih is not None else "-")
-        ws.cell(row=r, column=8, value=f"{pct:.1f}%" if pct is not None else "-")
-        ws.cell(row=r, column=9, value=catatan)
-        for c in (3, 4, 5, 6, 7):
-            ws.cell(row=r, column=c).number_format = rc.NUMBER_FORMAT
-        for c in range(1, 10):
-            ws.cell(row=r, column=c).border = BORDER
-            if fill:
-                ws.cell(row=r, column=c).fill = PatternFill("solid", fgColor=fill)
+    # Penjualan Langsung - informational saja, TIDAK dibandingkan ke POS
+    # (memang tidak akan pernah ada di data POS, ini penjualan di luar
+    # POS yang diverifikasi manual dan sengaja tetap berkategori
+    # 'Penjualan' apa adanya)
+    ada_langsung = any(k == "Penjualan Langsung (manual, bukan dari POS)" for _, k in bank_agg)
+    if ada_langsung:
         r += 1
+        ws.cell(row=r, column=1, value="Penjualan Langsung (manual, verifikasi terpisah, bukan dari POS - informasi saja):")
+        ws.cell(row=r, column=1).font = Font(bold=True, italic=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=9)
+        r += 1
+        for bulan in bulan_list:
+            val = bank_agg.get((bulan, "Penjualan Langsung (manual, bukan dari POS)"))
+            if val is None:
+                continue
+            ws.cell(row=r, column=1, value=bulan)
+            ws.cell(row=r, column=2, value="Penjualan Langsung")
+            ws.cell(row=r, column=6, value=val)
+            ws.cell(row=r, column=9, value="Tidak dibandingkan ke POS - memang bukan transaksi dari POS.")
+            ws.cell(row=r, column=6).number_format = rc.NUMBER_FORMAT
+            for c in range(1, 10):
+                ws.cell(row=r, column=c).border = BORDER
+            r += 1
 
     widths = [16, 26, 15, 14, 15, 18, 14, 12, 45]
     for i, w in enumerate(widths, start=1):
@@ -656,33 +649,30 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
     for i, w in enumerate([20, 20, 14, 14], start=1):
         ws3.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
-    # Rekonsiliasi harian per kategori metode, asumsi H+1 untuk QRIS/kartu
+    # Rekonsiliasi harian - Cash (tanpa penundaan) vs Non-Tunai gabungan
+    # (asumsi H+1, semua rekening bank selain Kas-Buku digabung jadi
+    # satu pool "Non-Tunai (Bank)" - lihat catatan di aggregate_bank_penjualan)
     all_dates_set = {tgl for (tgl, _) in pos_daily_raw} | {tgl for (_, tgl) in bank_daily}
     all_dates_sorted = sorted(all_dates_set)
 
     cash_daily = {tgl: v for (tgl, m), v in pos_daily_raw.items() if m == "Cash"}
-    qris_bri_kartu_daily = {}
+    non_tunai_daily = {}
     for (tgl, m), v in pos_daily_raw.items():
-        if m in ("QRIS BRI", "Kartu BRI"):
-            a = qris_bri_kartu_daily.setdefault(tgl, {"kotor": 0, "refund": 0, "n": 0})
+        if m in ("QRIS BRI", "QRIS BCA", "Kartu BRI"):
+            a = non_tunai_daily.setdefault(tgl, {"kotor": 0, "refund": 0, "n": 0})
             a["kotor"] += v["kotor"]
             a["refund"] += v["refund"]
             a["n"] += v["n"]
-    qris_bca_daily = {tgl: v for (tgl, m), v in pos_daily_raw.items() if m == "QRIS BCA"}
 
     n_selisih_cash = _write_harian_sheet(
         wb, "Harian - Cash", cash_daily, bank_daily, "Kas-Buku", all_dates_sorted, 0,
         "Cash tidak ada penundaan settlement - dibandingkan tanggal yang SAMA persis."
     )
-    n_selisih_bri = _write_harian_sheet(
-        wb, "Harian - QRIS BRI+Kartu (H+1)", qris_bri_kartu_daily, bank_daily, "BRI-507", all_dates_sorted, 1,
-        "Asumsi QRIS BRI dan Kartu BRI baru masuk rekening BRI-507 SEHARI SETELAH tanggal transaksi POS "
-        "(H+1). QRIS BRI + Kartu BRI digabung karena sama-sama settle ke BRI-507 tanpa penanda konsisten "
-        "yang membedakan keduanya di sisi bank."
-    )
-    n_selisih_bca = _write_harian_sheet(
-        wb, "Harian - QRIS BCA (H+1)", qris_bca_daily, bank_daily, "BCA-887", all_dates_sorted, 1,
-        "Asumsi QRIS BCA baru masuk rekening BCA-887 SEHARI SETELAH tanggal transaksi POS (H+1)."
+    n_selisih_non_tunai = _write_harian_sheet(
+        wb, "Harian - Non-Tunai (H+1)", non_tunai_daily, bank_daily, "Non-Tunai (Bank)", all_dates_sorted, 1,
+        "Asumsi QRIS/kartu baru masuk rekening bank SEHARI SETELAH tanggal transaksi POS (H+1). Semua "
+        "rekening bank selain Kas-Buku digabung jadi satu pool 'Non-Tunai (Bank)' - penjualan via QRIS/"
+        "kartu bisa settle ke rekening manapun, tidak selalu sesuai provider yang dipakai pembeli."
     )
 
     # Kalau ada file Interpretasi Penjualan (tanggal settle eksplisit per
@@ -693,20 +683,26 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
     if all_interp:
         interp_settle_agg = aggregate_interp_by_settle_date(all_interp)
         settle_dates_sorted = sorted({d for (d, _) in interp_settle_agg} | {d for (_, d) in bank_daily})
-        for metode, bank_rekening, judul in [
-            ("Cash", "Kas-Buku", "Presisi - Cash"),
-            ("QRIS BRI", "BRI-507", "Presisi - QRIS BRI"),
-            ("QRIS BCA", "BCA-887", "Presisi - QRIS BCA"),
-            ("Kartu BRI", "BRI-507", "Presisi - Kartu BRI"),
-        ]:
-            daily_for_metode = {d: v for (d, m), v in interp_settle_agg.items() if m == metode}
-            if not daily_for_metode:
-                continue
-            n_selisih_presisi[metode] = _write_harian_sheet(
-                wb, judul, daily_for_metode, bank_daily, bank_rekening, settle_dates_sorted, 0,
+        presisi_cash = {d: v for (d, m), v in interp_settle_agg.items() if m == "Cash"}
+        presisi_non_tunai = {}
+        for (d, m), v in interp_settle_agg.items():
+            if m in ("QRIS BRI", "QRIS BCA", "Kartu BRI"):
+                a = presisi_non_tunai.setdefault(d, {"kotor": 0, "refund": 0, "n": 0})
+                a["kotor"] += v["kotor"]
+                a["refund"] += v["refund"]
+                a["n"] += v["n"]
+        if presisi_cash:
+            n_selisih_presisi["Cash"] = _write_harian_sheet(
+                wb, "Presisi - Cash", presisi_cash, bank_daily, "Kas-Buku", settle_dates_sorted, 0,
+                "Dari file Interpretasi Penjualan - tanggal settle SUDAH dihitung eksplisit per transaksi."
+            )
+        if presisi_non_tunai:
+            n_selisih_presisi["Non-Tunai"] = _write_harian_sheet(
+                wb, "Presisi - Non-Tunai", presisi_non_tunai, bank_daily, "Non-Tunai (Bank)", settle_dates_sorted, 0,
                 "Dari file Interpretasi Penjualan - tanggal settle SUDAH dihitung eksplisit per transaksi "
                 "(bukan asumsi H+1 seragam), jadi 'Tanggal Bank' di sini SAMA dengan tanggal settle yang "
-                "tertera, tidak ada pergeseran tambahan."
+                "tertera, tidak ada pergeseran tambahan. Semua rekening bank selain Kas-Buku digabung jadi "
+                "satu pool 'Non-Tunai (Bank)'."
             )
 
     wb.save(output_path)
@@ -718,8 +714,7 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
         "total_refund": n_refund_total,
         "n_belum_lunas": len(belum_lunas),
         "n_hari_selisih_cash": n_selisih_cash,
-        "n_hari_selisih_qris_bri": n_selisih_bri,
-        "n_hari_selisih_qris_bca": n_selisih_bca,
+        "n_hari_selisih_non_tunai": n_selisih_non_tunai,
         "n_selisih_presisi": n_selisih_presisi,
     }
 
