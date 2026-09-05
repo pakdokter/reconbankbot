@@ -72,12 +72,128 @@ def _parse_pos_datetime(s):
     s = str(s or "").strip()
     if not s:
         return None
-    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y"):
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
         try:
             return datetime.strptime(s, fmt)
         except ValueError:
             continue
     return None
+
+
+_INTERPRETASI_KATEGORI_PREFIXES = ["Cash", "QRIS BRI", "QRIS BCA", "Kartu BRI", "Kartu"]
+_ESTIMASI_SETTLE_RE = re.compile(r"estimasi settle\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE)
+
+
+def _kategori_dari_nama_sheet_interpretasi(sheet_title):
+    """'Cash Desember 2024' -> 'Cash'; 'QRIS BRI Desember 2024' -> 'QRIS BRI'.
+    Return None kalau nama sheet tidak diawali salah satu kategori yang
+    dikenal (bukan sheet Interpretasi Penjualan). Beda dari
+    normalize_metode() - di sini nama sheet SUDAH JADI nama kategori
+    tujuan langsung, tidak perlu dipetakan dari teks metode POS mentah."""
+    for prefix in _INTERPRETASI_KATEGORI_PREFIXES:
+        if sheet_title.lower().startswith(prefix.lower() + " "):
+            return "Kartu BRI" if prefix == "Kartu" else prefix
+    return None
+
+
+def looks_like_interpretasi_file(path):
+    """True kalau file ini format 'Interpretasi Penjualan' (per-transaksi,
+    struktur standar rekonsiliasi, sheet dinamai per kategori metode
+    bayar) - BEDA dari export POS mentah (parse_pos_sales) dan BEDA dari
+    file Rekap (banyak sheet rekening bank)."""
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True)
+    except Exception:
+        return False
+    for sn in wb.sheetnames:
+        if _kategori_dari_nama_sheet_interpretasi(sn) is not None:
+            header = [wb[sn].cell(row=1, column=c).value for c in range(1, 9)]
+            if header == _EXPECTED_HEADER:
+                return True
+    return False
+
+
+def parse_interpretasi_penjualan(path):
+    """Baca file 'Interpretasi Penjualan' - beda dari export POS mentah:
+    per-transaksi SUDAH dalam format standar rekonsiliasi (Tanggal/
+    Keterangan/Kategori/dst), tiap sheet mewakili SATU kategori metode
+    bayar ('Cash Desember 2024', 'QRIS BRI Desember 2024', dst), dan
+    untuk metode non-tunai ada 'Estimasi settle: DD/MM/YYYY' eksplisit
+    di Keterangan Tambahan - TIDAK PERLU ASUMSI H+1, tanggal settle
+    sudah dihitung langsung per transaksi.
+
+    Refund muncul sebagai baris TERPISAH (Keterangan='Refund', Debit
+    negatif) - bukan kolom refund seperti di export POS mentah.
+
+    Return list of dict kompatibel dengan struktur parse_pos_sales()
+    (bisa dipakai bareng di aggregate_pos_by_month/aggregate_pos_by_day),
+    PLUS field 'tanggal_settle' untuk rekonsiliasi presisi harian."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    rows = []
+    found_any = False
+    for sn in wb.sheetnames:
+        metode = _kategori_dari_nama_sheet_interpretasi(sn)
+        if metode is None:
+            continue
+        ws = wb[sn]
+        header = [ws.cell(row=1, column=c).value for c in range(1, 9)]
+        if header != _EXPECTED_HEADER:
+            continue
+        found_any = True
+        txns, _ = rc.read_account_sheet(ws)
+        for t in txns:
+            if t.is_opening:
+                continue
+            tgl = rc.coerce_date(t.date)
+            if tgl is None:
+                continue
+            tgl_dt = datetime(tgl.year, tgl.month, tgl.day)
+            m = _ESTIMASI_SETTLE_RE.search(str(t.ket or ""))
+            if m:
+                tgl_settle = _parse_pos_datetime(m.group(1))
+            else:
+                tgl_settle = tgl_dt  # Cash: settle di hari yang sama
+            is_refund = str(t.desc or "").strip().lower() == "refund"
+            rows.append({
+                "no_transaksi": t.ket,
+                "waktu_order": None,
+                "waktu_bayar": None,
+                "tanggal": tgl_dt,
+                "tanggal_settle": tgl_settle,
+                "total": 0 if is_refund else t.nominal,
+                "metode_raw": sn,
+                "metode": metode,
+                "status": "Lunas",
+                "kasir": None,
+                "refund_tanggal": tgl_dt if is_refund else None,
+                "refund_jumlah": abs(t.nominal) if is_refund else 0,
+                "refund_metode": metode if is_refund else None,
+                "refund_alasan": None,
+            })
+    if not found_any:
+        raise KasirAuditError(
+            f"File '{path}' tidak dikenali sebagai format Interpretasi Penjualan - tidak ada sheet "
+            "dengan nama kategori metode bayar (Cash/QRIS BRI/QRIS BCA/Kartu BRI) berstruktur standar."
+        )
+    return rows
+
+
+def aggregate_interp_by_settle_date(interp_txns):
+    """Kelompokkan transaksi Interpretasi Penjualan per (tanggal SETTLE
+    aktual, kategori metode) - dipakai rekonsiliasi presisi (bukan
+    asumsi H+1 seragam, tapi tanggal settle yang sudah dihitung per
+    transaksi)."""
+    agg = {}
+    for t in interp_txns:
+        tgl_settle = t["tanggal_settle"]
+        if tgl_settle is None:
+            continue
+        key = (tgl_settle.date(), t["metode"])
+        a = agg.setdefault(key, {"kotor": 0, "refund": 0, "n": 0})
+        a["kotor"] += t["total"]
+        a["refund"] += t["refund_jumlah"]
+        a["n"] += 1
+    return agg
 
 
 def parse_pos_sales(path):
@@ -323,12 +439,21 @@ def _write_harian_sheet(wb, title, pos_daily, bank_daily, bank_rekening, all_dat
     return n_selisih
 
 
-def run_kasir_audit(pos_paths, rekap_paths, output_path):
+def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
+    interp_paths = interp_paths or []
     all_pos = []
     for p in pos_paths:
         all_pos.extend(parse_pos_sales(p))
-    pos_agg = aggregate_pos_by_month(all_pos)
-    pos_daily_raw = aggregate_pos_by_day(all_pos)
+    all_interp = []
+    for p in interp_paths:
+        all_interp.extend(parse_interpretasi_penjualan(p))
+    # Interpretasi Penjualan (kalau ada) dipakai UNTUK Ringkasan Bulanan
+    # juga - datanya per-transaksi persis sama, cuma sudah diinterpretasi
+    # dengan tanggal settle eksplisit, jadi lebih presisi daripada
+    # export POS mentah kalau keduanya tersedia untuk bulan yang sama.
+    all_pos_for_monthly = all_pos + all_interp
+    pos_agg = aggregate_pos_by_month(all_pos_for_monthly)
+    pos_daily_raw = aggregate_pos_by_day(all_pos_for_monthly)
     bank_agg, bank_daily = aggregate_bank_penjualan(rekap_paths)
 
     bulan_list = sorted({b for b, _ in pos_agg} | {b for b, _ in bank_agg},
@@ -478,7 +603,10 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path):
         c.fill = PatternFill("solid", fgColor=HEADER_FILL)
         c.border = BORDER
     r2 += 1
-    refund_txns = sorted((t for t in all_pos if t["status"] == "Refund"), key=lambda t: t["tanggal"] or datetime.min)
+    refund_txns = sorted(
+        (t for t in all_pos_for_monthly if t["refund_jumlah"] and t["refund_jumlah"] != 0),
+        key=lambda t: t["tanggal"] or datetime.min,
+    )
     for t in refund_txns:
         ws2.cell(row=r2, column=1, value=t["no_transaksi"])
         ws2.cell(row=r2, column=2, value=t["waktu_bayar"])
@@ -512,7 +640,7 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path):
         c.fill = PatternFill("solid", fgColor=HEADER_FILL)
         c.border = BORDER
     r3 += 1
-    belum_lunas = [t for t in all_pos if t["status"] == "Belum Lunas"]
+    belum_lunas = [t for t in all_pos_for_monthly if t["status"] == "Belum Lunas"]
     for t in belum_lunas:
         ws3.cell(row=r3, column=1, value=t["no_transaksi"])
         ws3.cell(row=r3, column=2, value=t["waktu_order"])
@@ -557,17 +685,42 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path):
         "Asumsi QRIS BCA baru masuk rekening BCA-887 SEHARI SETELAH tanggal transaksi POS (H+1)."
     )
 
+    # Kalau ada file Interpretasi Penjualan (tanggal settle eksplisit per
+    # transaksi, bukan asumsi H+1 seragam) - bangun sheet presisi
+    # TAMBAHAN yang lebih akurat, memakai tanggal settle yang sudah
+    # dihitung langsung, bukan tebakan H+1.
+    n_selisih_presisi = {}
+    if all_interp:
+        interp_settle_agg = aggregate_interp_by_settle_date(all_interp)
+        settle_dates_sorted = sorted({d for (d, _) in interp_settle_agg} | {d for (_, d) in bank_daily})
+        for metode, bank_rekening, judul in [
+            ("Cash", "Kas-Buku", "Presisi - Cash"),
+            ("QRIS BRI", "BRI-507", "Presisi - QRIS BRI"),
+            ("QRIS BCA", "BCA-887", "Presisi - QRIS BCA"),
+            ("Kartu BRI", "BRI-507", "Presisi - Kartu BRI"),
+        ]:
+            daily_for_metode = {d: v for (d, m), v in interp_settle_agg.items() if m == metode}
+            if not daily_for_metode:
+                continue
+            n_selisih_presisi[metode] = _write_harian_sheet(
+                wb, judul, daily_for_metode, bank_daily, bank_rekening, settle_dates_sorted, 0,
+                "Dari file Interpretasi Penjualan - tanggal settle SUDAH dihitung eksplisit per transaksi "
+                "(bukan asumsi H+1 seragam), jadi 'Tanggal Bank' di sini SAMA dengan tanggal settle yang "
+                "tertera, tidak ada pergeseran tambahan."
+            )
+
     wb.save(output_path)
-    n_refund_total = sum(t["refund_jumlah"] for t in all_pos if t["status"] == "Refund")
+    n_refund_total = sum(t["refund_jumlah"] for t in all_pos_for_monthly if t["refund_jumlah"])
     return {
         "n_bulan": len(bulan_list),
-        "n_transaksi_pos": len(all_pos),
+        "n_transaksi_pos": len(all_pos_for_monthly),
         "n_refund": len(refund_txns),
         "total_refund": n_refund_total,
         "n_belum_lunas": len(belum_lunas),
         "n_hari_selisih_cash": n_selisih_cash,
         "n_hari_selisih_qris_bri": n_selisih_bri,
         "n_hari_selisih_qris_bca": n_selisih_bca,
+        "n_selisih_presisi": n_selisih_presisi,
     }
 
 
