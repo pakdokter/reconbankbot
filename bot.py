@@ -398,6 +398,25 @@ async def handle_auditkasir_document(update: Update, context: ContextTypes.DEFAU
     )
 
 
+def _build_auditkasir_filename(bulan_list):
+    """Bangun nama file output /auditkasir yang menyertakan bulan & tahun
+    yang diaudit - 'Audit_Kasir_Desember_2024.xlsx' untuk 1 bulan,
+    'Audit_Kasir_Oktober-Desember_2024.xlsx' untuk beberapa bulan
+    berurutan dalam tahun yang sama, atau gabungan tahun kalau lintas
+    tahun (mis. 'Audit_Kasir_Nov2024-Jan2025.xlsx')."""
+    if not bulan_list:
+        return "Audit_Kasir.xlsx"
+    parsed = [b.rsplit(" ", 1) for b in bulan_list]  # [['Desember', '2024'], ...]
+    if len(parsed) == 1:
+        bulan, tahun = parsed[0]
+        return f"Audit_Kasir_{bulan}_{tahun}.xlsx"
+    bulan_awal, tahun_awal = parsed[0]
+    bulan_akhir, tahun_akhir = parsed[-1]
+    if tahun_awal == tahun_akhir:
+        return f"Audit_Kasir_{bulan_awal}-{bulan_akhir}_{tahun_awal}.xlsx"
+    return f"Audit_Kasir_{bulan_awal}{tahun_awal}-{bulan_akhir}{tahun_akhir}.xlsx"
+
+
 async def _process_auditkasir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pos_files = context.user_data.get("auditkasir_pos_files", [])
     rekap_files = context.user_data.get("auditkasir_rekap_files", [])
@@ -429,9 +448,10 @@ async def _process_auditkasir(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"Belum lunas (dikecualikan dari audit): {summary['n_belum_lunas']} transaksi.\n\n"
         "Cek sheet 'Ringkasan Audit Kasir' - baris merah/kuning perlu ditelusuri manual."
     ).replace(",", ".")
+    output_filename = _build_auditkasir_filename(summary.get("bulan_list", []))
     await status_msg.delete()
     with open(output_path, "rb") as f:
-        await update.message.reply_document(document=f, filename="Audit_Kasir.xlsx", caption=caption)
+        await update.message.reply_document(document=f, filename=output_filename, caption=caption)
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
