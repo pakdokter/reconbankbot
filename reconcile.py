@@ -232,12 +232,13 @@ class Txn:
     @property
     def nominal(self):
         """Nilai transaksi bertanda: negatif jika debit (uang keluar),
-        positif jika kredit (uang masuk)."""
-        if self.debit:
-            return self.debit  # sudah negatif di data sumber
-        if self.kredit:
-            return self.kredit
-        return 0
+        positif jika kredit (uang masuk). Kalau SATU baris punya Debit
+        DAN Kredit sekaligus (mis. biaya admin dipotong langsung dari
+        transaksi masuk, digabung satu baris) - jumlahkan keduanya untuk
+        efek bersihnya, JANGAN cuma ambil salah satu (debit sudah negatif
+        di data sumber, jadi penjumlahan otomatis menghasilkan net yang
+        benar)."""
+        return (self.debit or 0) + (self.kredit or 0)
 
     @property
     def is_transfer(self):
