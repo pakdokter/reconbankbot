@@ -313,9 +313,21 @@ def aggregate_bank_penjualan(rekap_paths):
     ini penjualan yang TIDAK lewat POS sama sekali (makanya kategorinya
     tetap 'Penjualan' apa adanya, tidak diubah), jadi tidak akan pernah
     match dengan data POS manapun. Dihitung terpisah supaya kelihatan di
-    laporan, bukan dianggap sebagai selisih yang mencurigakan."""
+    laporan, bukan dianggap sebagai selisih yang mencurigakan.
+
+    Return (agg, daily, txns_by_account, all_account_bases):
+    - txns_by_account: {base_rekening: [{"tanggal", "desc", "kategori_asli",
+      "nominal", "sheet", "row"}, ...]} - detail per TRANSAKSI (bukan
+      digabung harian) - dipakai untuk sheet per-rekening & deteksi
+      'Penjualan Direct'.
+    - all_account_bases: set semua nama dasar rekening yang ada di file
+      Rekap, TERMASUK yang tidak punya transaksi Penjualan sama sekali -
+      supaya sheet per-rekening tetap dibuat (header saja) untuk rekening
+      itu."""
     agg = {}
     daily = {}  # (kelompok, tanggal) -> total, buat cek settlement lintas bulan
+    txns_by_account = {}
+    all_account_bases = set()
     for path in rekap_paths:
         wb = openpyxl.load_workbook(path)
         account_sheets = [s for s in wb.sheetnames if _looks_like_account_sheet(wb[s])]
@@ -329,6 +341,7 @@ def aggregate_bank_penjualan(rekap_paths):
             rc.split_fliptech_combined_rows(wb[sn])
             txns, _ = rc.read_account_sheet(wb[sn])
             base = sn.rsplit(" ", 2)[0]
+            all_account_bases.add(base)
             for t in txns:
                 if t.effective_kategori != "Penjualan":
                     continue
@@ -347,7 +360,11 @@ def aggregate_bank_penjualan(rekap_paths):
                 agg[key] = agg.get(key, 0) + t.nominal
                 dkey = (kelompok, tgl)
                 daily[dkey] = daily.get(dkey, 0) + t.nominal
-    return agg, daily
+                txns_by_account.setdefault(base, []).append({
+                    "tanggal": tgl, "desc": t.desc, "kategori_asli": t.kategori,
+                    "nominal": t.nominal, "sheet": sn, "row": t.row,
+                })
+    return agg, daily, txns_by_account, all_account_bases
 
 def _write_harian_sheet(wb, title, pos_daily, bank_daily, bank_rekening, all_dates, shift_hari,
                           catatan_header):
@@ -452,6 +469,78 @@ def _write_harian_sheet(wb, title, pos_daily, bank_daily, bank_rekening, all_dat
     return n_selisih
 
 
+def _is_angka_bulat(nominal):
+    """Heuristik sederhana: kelipatan Rp50.000 dianggap 'terlalu bulat' -
+    ciri transaksi manual/direct (pembayaran langsung biasanya dibulatkan
+    penjual/pembeli), BEDA dari hasil settlement POS yang biasanya angka
+    random hasil gabungan beberapa item + pajak/pembulatan kecil."""
+    return nominal != 0 and abs(nominal) % 50000 == 0
+
+
+def write_per_rekening_sheets(wb, bank_txns_by_account, all_account_bases, expected_by_base):
+    """Satu sheet per rekening (TERMASUK yang tidak punya transaksi
+    Penjualan sama sekali - tetap dibuat dengan header kosong), 2 kolom
+    saja: Keterangan, Kategori. Per TRANSAKSI (bukan digabung harian -
+    settlement bank sendiri sudah menggabungkan beberapa transaksi POS
+    jadi satu baris, jadi audit ini ikut per baris settlement apa
+    adanya).
+
+    'Penjualan Direct' ditulis di kolom Kategori sheet audit ini SAJA
+    (BUKAN mengubah Kategori Transaksi di file Rekap aslinya) untuk
+    transaksi yang kemungkinan besar TIDAK berasal dari POS: pada HARI
+    itu, total Penjualan REKENING INI SENDIRI (bukan gabungan rekening
+    lain) melebihi ekspektasi POS lebih dari 15% - DAN nominal
+    transaksinya 'terlalu bulat' (lihat _is_angka_bulat).
+
+    expected_by_base: {base_rekening: {tanggal: nominal_pos_diharapkan}}
+    - sudah dalam TANGGAL BANK (settle date/H+1 utk non-tunai, tanggal
+      sama utk Kas-Buku) supaya tinggal dicocokkan langsung ke tanggal
+      transaksi bank tanpa geser lagi di sini."""
+    for base in sorted(all_account_bases):
+        title = f"Rekening - {base}"
+        if len(title) > 31:
+            title = title[:31]
+        ws = wb.create_sheet(title)
+        ws.cell(row=1, column=1, value="Keterangan")
+        ws.cell(row=1, column=2, value="Kategori")
+        for c in (1, 2):
+            cell = ws.cell(row=1, column=c)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor=HEADER_FILL)
+            cell.border = BORDER
+        r = 2
+        txns = sorted(bank_txns_by_account.get(base, []), key=lambda t: t["tanggal"] or datetime.min.date())
+        day_totals = {}
+        for t in txns:
+            if t["tanggal"] is None:
+                continue
+            d = t["tanggal"]
+            day_totals[d] = day_totals.get(d, 0) + t["nominal"]
+        expected_for_base = expected_by_base.get(base, {})
+        for t in txns:
+            kategori_tampil = t["kategori_asli"]
+            if t["tanggal"] is not None:
+                d = t["tanggal"]
+                expected = expected_for_base.get(d, 0)
+                actual = day_totals.get(d, 0)
+                if expected > 0 and actual > expected * 1.15 and _is_angka_bulat(t["nominal"]):
+                    kategori_tampil = "Penjualan Direct"
+            ws.cell(row=r, column=1, value=t["desc"])
+            ws.cell(row=r, column=2, value=kategori_tampil)
+            for c in (1, 2):
+                ws.cell(row=r, column=c).border = BORDER
+            if kategori_tampil == "Penjualan Direct":
+                ws.cell(row=r, column=2).fill = PatternFill("solid", fgColor=WARN_FILL)
+                ws.cell(row=r, column=2).font = Font(bold=True)
+            r += 1
+        if not txns:
+            ws.cell(row=r, column=1, value="(tidak ada transaksi Penjualan di rekening ini pada periode ini)")
+            ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        ws.column_dimensions["A"].width = 50
+        ws.column_dimensions["B"].width = 22
+        ws.freeze_panes = "A2"
+
+
 def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
     interp_paths = interp_paths or []
     all_pos = []
@@ -467,7 +556,7 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
     all_pos_for_monthly = all_pos + all_interp
     pos_agg = aggregate_pos_by_month(all_pos_for_monthly)
     pos_daily_raw = aggregate_pos_by_day(all_pos_for_monthly)
-    bank_agg, bank_daily = aggregate_bank_penjualan(rekap_paths)
+    bank_agg, bank_daily, bank_txns_by_account, all_account_bases = aggregate_bank_penjualan(rekap_paths)
 
     bulan_list = sorted({b for b, _ in pos_agg} | {b for b, _ in bank_agg},
                          key=lambda lbl: (lbl.split()[1], rc.MONTHS_ID.index(lbl.split()[0])))
@@ -680,6 +769,8 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
     # TAMBAHAN yang lebih akurat, memakai tanggal settle yang sudah
     # dihitung langsung, bukan tebakan H+1.
     n_selisih_presisi = {}
+    presisi_cash = {}
+    presisi_non_tunai = {}
     if all_interp:
         interp_settle_agg = aggregate_interp_by_settle_date(all_interp)
         settle_dates_sorted = sorted({d for (d, _) in interp_settle_agg} | {d for (_, d) in bank_daily})
@@ -704,6 +795,25 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
                 "tertera, tidak ada pergeseran tambahan. Semua rekening bank selain Kas-Buku digabung jadi "
                 "satu pool 'Non-Tunai (Bank)'."
             )
+
+    # Sheet per rekening (Keterangan + Kategori saja, per transaksi) -
+    # deteksi 'Penjualan Direct' pakai ekspektasi PALING PRESISI yang
+    # tersedia (tanggal settle eksplisit dari Interpretasi kalau ada,
+    # kalau tidak pakai asumsi H+1 dari export POS mentah).
+    from datetime import timedelta
+    if presisi_cash:
+        cash_expected = {d: v["kotor"] - v["refund"] for d, v in presisi_cash.items()}
+    else:
+        cash_expected = {d: v["kotor"] - v["refund"] for d, v in cash_daily.items()}
+    if presisi_non_tunai:
+        non_tunai_expected = {d: v["kotor"] - v["refund"] for d, v in presisi_non_tunai.items()}
+    else:
+        non_tunai_expected = {(d + timedelta(days=1)): (v["kotor"] - v["refund"]) for d, v in non_tunai_daily.items()}
+    expected_by_base = {
+        base: (cash_expected if base == "Kas-Buku" else non_tunai_expected)
+        for base in all_account_bases
+    }
+    write_per_rekening_sheets(wb, bank_txns_by_account, all_account_bases, expected_by_base)
 
     wb.save(output_path)
     n_refund_total = sum(t["refund_jumlah"] for t in all_pos_for_monthly if t["refund_jumlah"])
