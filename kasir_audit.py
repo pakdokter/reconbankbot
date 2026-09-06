@@ -709,6 +709,7 @@ def run_kasir_audit(pos_paths, rekap_paths, output_path, interp_paths=None):
     n_refund_total = sum(t["refund_jumlah"] for t in all_pos_for_monthly if t["refund_jumlah"])
     return {
         "n_bulan": len(bulan_list),
+        "bulan_list": bulan_list,
         "n_transaksi_pos": len(all_pos_for_monthly),
         "n_refund": len(refund_txns),
         "total_refund": n_refund_total,
