@@ -41,6 +41,7 @@ SECTION_FONT = Font(bold=True)
 HIGH_FILL = PatternFill("solid", fgColor="C6EFCE")
 MED_FILL = PatternFill("solid", fgColor="FFEB9C")
 LOW_FILL = PatternFill("solid", fgColor="FFC7CE")
+TRANSFER_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")
 DATE_FORMAT = "d-mmm-yy"
 NUMBER_FORMAT = "#,##0"
 THIN = Side(style="thin", color="D1D5DB")
@@ -1366,6 +1367,36 @@ def add_effective_category_column(ws, txns):
     ws.column_dimensions[get_column_letter(13)].width = 34
 
 
+def highlight_matched_transfers(wb, matches, combo_matches):
+    """Beri highlight BIRU (TRANSFER_MATCH_FILL) pada baris transaksi di
+    sheet rekening asli (bukan sheet Rekonsiliasi) untuk transfer
+    internal yang SUDAH ketemu pasangannya - baik sisi asal (src) maupun
+    sisi tujuan (dst), supaya kelihatan langsung di sheet rekening mana
+    saja transaksi yang sudah tervalidasi cocok satu sama lain, tanpa
+    perlu bolak-balik ke sheet Rekonsiliasi.
+
+    Hanya match dengan confidence High/Medium/Low (dst ketemu) yang
+    dihighlight - 'Needs manual verification' dan 'Not applicable' TIDAK
+    (belum/tidak ketemu pasangan, jadi tidak relevan diberi tanda
+    'cocok'). Split/merge (combo_matches) - src DAN semua parts-nya
+    dihighlight."""
+    def _mark(t):
+        if t is None or t.sheet not in wb.sheetnames:
+            return
+        ws = wb[t.sheet]
+        for c in range(1, 10):
+            ws.cell(row=t.row, column=c).fill = TRANSFER_MATCH_FILL
+
+    for m in matches:
+        if m.dst is not None and m.confidence in ("High", "Medium", "Low"):
+            _mark(m.src)
+            _mark(m.dst)
+    for combo in combo_matches:
+        _mark(combo["src"])
+        for part in combo["parts"]:
+            _mark(part)
+
+
 # ---------------------------------------------------------------------------
 # Laporan Laba Rugi
 # ---------------------------------------------------------------------------
@@ -2253,6 +2284,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
         opening_rows[sname] = opening.row if opening else 2
 
     matches, combo_matches = find_matches(all_txns, account_sheets)
+    highlight_matched_transfers(wb, matches, combo_matches)
     minus_flags = find_minus_flags(all_txns_by_sheet)
     balance_status = compute_balance_status(all_txns_by_sheet)
     new_category_flags = find_new_category_flags(all_txns_by_sheet)
