@@ -279,6 +279,13 @@ def sum_modal(txns):
     return round(sum(t.nominal for t in txns if t.is_capital), 2)
 
 
+def sum_personal_expense(txns):
+    """Pengeluaran Pribadi owner - dikeluarkan dari Laba Rugi (bukan
+    beban bisnis), diperlakukan seperti prive/penarikan modal (mengurangi
+    Ekuitas) - konsisten dengan Txn.is_personal_expense di reconcile.py."""
+    return round(sum(t.nominal for t in txns if t.is_personal_expense), 2)
+
+
 def sum_tip_minus(txns):
     """Tip/Minus/Lebih + semua varian kata (minus, lebih, uang cust, tip/
     tips, dst) - konsisten dengan Txn.is_tip_minus_variant di reconcile.py."""
@@ -1137,6 +1144,18 @@ def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="K
         lambda label: modal_kumulatif[labels.index(label)],
     )
     r += 1
+    pengeluaran_pribadi_row = r
+    pp_per_month = [sum_personal_expense(m["all_txns"]) for m in months]
+    pp_kumulatif = []
+    running = 0.0
+    for v in pp_per_month:
+        running = round(running + v, 2)
+        pp_kumulatif.append(running)
+    write_snapshot_data_row(
+        ws, r, "Pengeluaran Pribadi (kumulatif s.d. bulan ini, mengurangi ekuitas)", labels,
+        lambda label: pp_kumulatif[labels.index(label)],
+    )
+    r += 1
     laba_row = r
     write_snapshot_formula_row(
         ws, r, "Laba Bersih (kumulatif s.d. bulan ini)", labels,
@@ -1245,6 +1264,12 @@ def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="K
         lambda label: modal_per_month[labels.index(label)],
     )
     r += 1
+    pp_bulan_row = r
+    rc.write_pivot_data_row(
+        ws, r, "Pengeluaran Pribadi Bulan Ini (bukan kumulatif)", labels,
+        lambda label: pp_per_month[labels.index(label)],
+    )
+    r += 1
     laba_bulan_row = r
     rc.write_pivot_formula_row(
         ws, r, "Laba/Rugi Bulan Ini", labels,
@@ -1334,8 +1359,13 @@ def write_quarterly_cash_flow(wb, months, income_ref, balance_ref, period_word="
         lambda label: sum_modal(_txns_for_label(months, label)),
     )
     r += 1
+    rc.write_pivot_data_row(
+        ws, r, "Pengeluaran Pribadi", labels,
+        lambda label: sum_personal_expense(_txns_for_label(months, label)),
+    )
+    r += 1
     total_fin_row = r
-    rc.write_pivot_subtotal_row(ws, r, "Kas Bersih dari Pendanaan", labels, [fin_row, fin_row])
+    rc.write_pivot_subtotal_row(ws, r, "Kas Bersih dari Pendanaan", labels, [fin_row, total_fin_row - 1])
     r += 2
 
     net_change_row = r
