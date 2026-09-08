@@ -108,18 +108,18 @@ CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keyword
 # kalau nama sheet mengandung teks ini (case-insensitive).
 _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
-     "category": "Belanja Operasional", "sheet_contains": None},
+     "category": "Overhead", "sheet_contains": None},
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
     {"all": ["cashback", "qris"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["cashback mdr"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["cashback jago"], "category": "Biaya Admin Bank", "sheet_contains": "jago"},
     {"any": ["dr koreksi bunga", "cr koreksi bunga", "koreksi bunga"], "category": "Biaya Admin Bank", "sheet_contains": None},
     {"any": ["interest on account"], "category": "Biaya Admin Bank", "sheet_contains": None},
-    {"any": ["layanan"], "category": "Belanja Operasional", "sheet_contains": "jago"},
+    {"any": ["layanan"], "category": "Overhead", "sheet_contains": "jago"},
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
     {"any": ["sponsorship", "charity", "donasi"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
-    {"any": ["sahabudin"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["sahabudin"], "category": "Overhead", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["modal & setoran pemilik", "modal dan setoran pemilik"], "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "none_of": ["bayar hutang", "bayar pinjaman", "cicilan hutang", "cicilan pinjaman"],
@@ -128,13 +128,16 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["tarik tunai"], "category": "Penjualan", "sheet_contains": "kas"},
-    {"any": ["listrik"], "category": "Belanja Operasional", "sheet_contains": None},
-    {"any": ["pulsa"], "category": "Belanja Operasional", "sheet_contains": None},
-    {"any": ["sisa belanja", "sisa set"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["sewa", "listrik", "pln", "air sto", "utilitas", "web", "spotify", "telkom"],
+     "category": "Overhead", "sheet_contains": None},
+    {"any": ["pulsa", "parkir", "es batu", "beli masker", "shopee", "ovo", "gopay", "dana",
+             "telkomsel", "top up", "isi saldo", "tarikan atm", "ganti uang belanja"],
+     "category": "OpEx", "sheet_contains": None},
+    {"any": ["sisa belanja", "sisa set"], "category": "OpEx", "sheet_contains": None},
     {"any": ["tukang", "reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin",
              "perbaikan bangunan", "perbaiki ac", "perbaiki mesin", "uang ac", "maintenance"],
      "category": "Reparasi dan Maintenance", "sheet_contains": None},
-    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "OpEx", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
@@ -161,7 +164,7 @@ def _build_transfer_masuk_rules():
                        "category": "Modal & Setoran Pemilik", "sheet_contains": None})
     if employee_keywords:
         rules.append({"all": ["transfer masuk"], "any": employee_keywords,
-                       "category": "Belanja Operasional", "sheet_contains": None})
+                       "category": "OpEx", "sheet_contains": None})
     rules.append({"all": ["transfer masuk"], "none_of": owner_keywords + employee_keywords,
                   "amount_max": 300000, "category": "Penjualan", "sheet_contains": None})
     # Fallback KHUSUS untuk "transfer masuk" yang TIDAK match salah satu
@@ -1479,6 +1482,8 @@ INCOME_CATEGORIES_REVENUE = ["Penjualan"]
 INCOME_CATEGORIES_EXPENSE = [
     "Belanja Bahan",
     "Belanja Operasional",
+    "Overhead",
+    "OpEx",
     "Belanja Konsumsi",
     "Reparasi dan Maintenance",
     "Belanja Assets",
