@@ -80,6 +80,15 @@ CAPITAL_KEYWORDS = shared_rules.get("capital_keywords", [
     "laba ditahan bulanan",
 ])
 
+# Pengeluaran pribadi owner - DIKELUARKAN dari Laba Rugi (bukan beban
+# bisnis) di SEMUA level (bulanan, kuartal, tahunan), diperlakukan
+# seperti prive/penarikan modal (mengurangi Ekuitas, BUKAN Beban) supaya
+# Neraca tetap balance tanpa menganggu Laba Rugi bisnis. Setiap transaksi
+# kategori ini akan diverifikasi manual (lihat sheet Rekonsiliasi bagian
+# 5) - user menegaskan ini perlu diaudit satu-satu, bukan otomatis
+# dipercaya begitu saja.
+PERSONAL_EXPENSE_KEYWORDS = shared_rules.get("personal_expense_keywords", ["pengeluaran pribadi"])
+
 # "Transfer Masuk" sendirian terlalu umum untuk langsung dianggap Modal
 # (transfer masuk dari pelanggan/pihak luar seharusnya Penjualan, bukan
 # Modal) - jadi HANYA dianggap setara Modal & Setoran Pemilik kalau
@@ -171,7 +180,7 @@ CATEGORY_OVERRIDE_RULES = _STATIC_CATEGORY_OVERRIDE_RULES + _build_transfer_masu
 
 _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_category_override", [
     "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
-    "saldo awal", "saldo awal bulan", "modal",
+    "saldo awal", "saldo awal bulan", "modal", "pengeluaran pribadi",
 ]))
 
 
@@ -248,11 +257,16 @@ class Txn:
             return True
         # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
         # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
-        # bukan pindah antar rekening sendiri)
-        if any(kw in k for kw in CAPITAL_KEYWORDS):
+        # bukan pindah antar rekening sendiri) atau pengeluaran pribadi
+        if any(kw in k for kw in CAPITAL_KEYWORDS) or any(kw in k for kw in PERSONAL_EXPENSE_KEYWORDS):
             return False
         d = (self.desc or "").lower()
         return any(kw in d for kw in DESC_TRANSFER_KEYWORDS)
+
+    @property
+    def is_personal_expense(self):
+        k = (self.effective_kategori or "").lower()
+        return any(kw in k for kw in PERSONAL_EXPENSE_KEYWORDS)
 
     @property
     def is_tip_minus_variant(self):
@@ -901,6 +915,9 @@ def compute_balance_status(all_txns_by_sheet):
     def sum_modal(txns):
         return sum(t.nominal for t in txns if t.is_capital)
 
+    def sum_personal_expense(txns):
+        return sum(t.nominal for t in txns if t.is_personal_expense)
+
     results = {}
     for sheet, txns in all_txns_by_sheet.items():
         if not txns:
@@ -932,7 +949,8 @@ def compute_balance_status(all_txns_by_sheet):
         )
         laba_bersih = revenue + expense + other
         modal = sum_modal(txns)
-        ekuitas = saldo_awal + modal + laba_bersih
+        pengeluaran_pribadi = sum_personal_expense(txns)
+        ekuitas = saldo_awal + modal + pengeluaran_pribadi + laba_bersih
         transfer_bersih = sum_multi(txns, TRANSFER_CATEGORY_TEXTS)
         selisih = round((total_aset - ekuitas) - transfer_bersih, 2)
         kategori_baru_txns = [t for t in txns if t.effective_kategori == "Kategori Baru"]
@@ -1001,6 +1019,20 @@ def find_new_category_flags(all_txns_by_sheet):
     return flags
 
 
+def find_personal_expense_flags(all_txns_by_sheet):
+    """Kumpulkan semua transaksi berkategori 'Pengeluaran Pribadi' -
+    dikeluarkan dari Laba Rugi (diperlakukan seperti prive/penarikan
+    modal, mengurangi Ekuitas), TAPI user menegaskan tiap transaksi ini
+    perlu diverifikasi manual satu-satu. Dipakai untuk daftar audit di
+    sheet Rekonsiliasi bagian 5."""
+    flags = []
+    for sheet, txns in all_txns_by_sheet.items():
+        for t in txns:
+            if t.is_personal_expense:
+                flags.append(t)
+    return flags
+
+
 # ---------------------------------------------------------------------------
 # Penulisan sheet Rekonsiliasi
 # ---------------------------------------------------------------------------
@@ -1018,7 +1050,7 @@ def conf_fill(conf):
     return {"High": HIGH_FILL, "Medium": MED_FILL, "Low": LOW_FILL}.get(conf, LOW_FILL)
 
 
-def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None, new_category_flags=None):
+def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None, new_category_flags=None, personal_expense_flags=None):
     if "Rekonsiliasi" in wb.sheetnames:
         del wb["Rekonsiliasi"]
     ws = wb.create_sheet("Rekonsiliasi")
@@ -1294,6 +1326,46 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
         ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
         r += 1
 
+    r += 1
+    ws.cell(row=r, column=1, value="5. PENGELUARAN PRIBADI (perlu diverifikasi manual)")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    if personal_expense_flags:
+        ws.cell(row=r, column=1, value=(
+            "Dikeluarkan dari Laba Rugi (diperlakukan seperti prive/penarikan modal - mengurangi Ekuitas "
+            "di Neraca, BUKAN beban bisnis), TAPI setiap transaksi berikut perlu diverifikasi manual satu-"
+            "satu - pastikan memang benar pengeluaran pribadi owner, bukan salah kategori."
+        ))
+        ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        ws.row_dimensions[r].height = 40
+        r += 1
+        headers5 = ["Rekening", "Tanggal", "Keterangan", "Kategori Asli", "Objek", "Nominal"]
+        hdr_row5 = r
+        for i, h in enumerate(headers5, start=1):
+            ws.cell(row=hdr_row5, column=i, value=h)
+        style_header(ws, hdr_row5, len(headers5))
+        r += 1
+        for t in sorted(personal_expense_flags, key=lambda t: _sort_key(t.date)):
+            ws.cell(row=r, column=1, value=t.sheet)
+            ws.cell(row=r, column=2, value=coerce_date(t.date))
+            ws.cell(row=r, column=3, value=t.desc)
+            ws.cell(row=r, column=4, value=t.kategori)
+            ws.cell(row=r, column=5, value=t.objek)
+            ws.cell(row=r, column=6, value=t.nominal)
+            ws.cell(row=r, column=2).number_format = "dd/mm/yyyy"
+            ws.cell(row=r, column=6).number_format = NUMBER_FORMAT
+            for c in range(1, len(headers5) + 1):
+                ws.cell(row=r, column=c).border = BORDER
+                ws.cell(row=r, column=c).fill = TRANSFER_MATCH_FILL
+            r += 1
+    else:
+        ws.cell(row=r, column=1, value="Tidak ada transaksi Pengeluaran Pribadi bulan ini.")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        r += 1
+
     widths = [22, 12, 26, 14, 22, 12, 26, 14, 10, 14, 14, 40, 12, 22, 20]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -1481,6 +1553,8 @@ def _is_recognized_category(kategori):
     if any(kw in k for kw in TRANSFER_KEYWORDS):
         return True
     if any(kw in k for kw in CAPITAL_KEYWORDS):
+        return True
+    if any(kw in k for kw in PERSONAL_EXPENSE_KEYWORDS):
         return True
     known_exact = {
         c.lower() for c in (
@@ -1834,6 +1908,10 @@ def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_en
     write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (+ Laba Ditahan Bulanan) (bulan ini)", sheets,
                           lambda sheet: sumif_modal_one_sheet(sheet, sheets_last_row[sheet]))
     r += 1
+    pengeluaran_pribadi_row = r
+    write_pivot_data_row(ws, r, "Pengeluaran Pribadi (mengurangi ekuitas, bukan beban bisnis)", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Pengeluaran Pribadi"))
+    r += 1
     laba_row = r
     # kolom rekening di Neraca urutannya sama dengan di Laporan Laba Rugi
     # (keduanya dari sheets_last_row.keys() yang sama), jadi tinggal pakai
@@ -1935,8 +2013,11 @@ def write_cash_flow(wb, sheets_last_row, income_ref, balance_ref, period_label):
     write_pivot_data_row(ws, r, "Modal & Setoran Pemilik (+ Laba Ditahan Bulanan)", sheets,
                           lambda sheet: sumif_modal_one_sheet(sheet, sheets_last_row[sheet]))
     r += 1
+    write_pivot_data_row(ws, r, "Pengeluaran Pribadi", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Pengeluaran Pribadi"))
+    r += 1
     total_fin_row = r
-    write_pivot_subtotal_row(ws, r, "Kas Bersih dari Pendanaan", sheets, [fin_row, fin_row])
+    write_pivot_subtotal_row(ws, r, "Kas Bersih dari Pendanaan", sheets, [fin_row, total_fin_row - 1])
     r += 2
 
     net_change_row = r
@@ -2288,6 +2369,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
     minus_flags = find_minus_flags(all_txns_by_sheet)
     balance_status = compute_balance_status(all_txns_by_sheet)
     new_category_flags = find_new_category_flags(all_txns_by_sheet)
+    personal_expense_flags = find_personal_expense_flags(all_txns_by_sheet)
 
     # transaksi yang sudah terjelaskan lewat split/merge tidak perlu lagi
     # tampil sebagai "Needs manual verification" biasa di bagian 1
@@ -2301,7 +2383,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
         if m.dst is not None or id(m.src) not in combo_covered_ids
     ]
 
-    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status, new_category_flags)
+    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status, new_category_flags, personal_expense_flags)
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
@@ -2350,6 +2432,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
         "n_minus_flags": len(minus_flags),
         "n_balance_issues": n_balance_issues,
         "n_new_category": len(new_category_flags),
+        "n_personal_expense": len(personal_expense_flags),
         "with_statements": actually_write_statements,
         "period_label": period_label,
         "no_issues": no_issues,
