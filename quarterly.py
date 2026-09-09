@@ -927,6 +927,7 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     rc.write_pivot_section(ws, r, "BEBAN", labels)
     r += 1
     exp_rows = []
+    exp_row_by_cat = {}
     for cat in rc.INCOME_CATEGORIES_EXPENSE:
         if cat.strip().lower() == ASSET_CATEGORY_TEXT:
             continue  # dikapitalisasi jadi Aset Tetap, bukan beban tunai penuh - lihat baris Beban Penyusutan
@@ -935,26 +936,32 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
             lambda label, cat=cat: sum_category(_txns_for_label(months, label), cat),
         )
         exp_rows.append(r)
+        exp_row_by_cat[cat] = r
         r += 1
     rc.write_pivot_data_row(
         ws, r, "Marketing & RnD", labels,
         lambda label: sum_category_multi(_txns_for_label(months, label), rc.MARKETING_RND_CATEGORY_TEXTS),
     )
     exp_rows.append(r)
+    marketing_rnd_row = r
     r += 1
     rc.write_pivot_data_row(
         ws, r, "Gaji Pegawai (basis kas - rincian accrual per orang: sheet Roster Gaji)", labels,
         lambda label: sum_category_prefix(_txns_for_label(months, label), "gaji"),
     )
     exp_rows.append(r)
+    gaji_row = r
     r += 1
     rc.write_pivot_data_row(
         ws, r, "Biaya Admin Bank (termasuk biaya transfer Fliptech)", labels,
         lambda label: sum_category_multi(_txns_for_label(months, label), rc.BANK_FEE_CATEGORY_TEXTS),
     )
     exp_rows.append(r)
+    fee_row = r
     r += 1
+    depresiasi_row = None
     if assets:
+        depresiasi_row = r
         rc.write_pivot_data_row(
             ws, r, "Beban Penyusutan (Aset Tetap, garis lurus)", labels,
             lambda label: -depreciation_for_month_idx(assets, labels.index(label)),
@@ -963,6 +970,36 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
         r += 1
     total_exp_row = r
     rc.write_pivot_subtotal_row(ws, r, "Total Beban", labels, exp_rows)
+    r += 2
+
+    # RINGKASAN LAYER 2 (COGS/OpEx) - roll-up sesuai "Kontrak Kategori:
+    # Bot Konversi -> Bot Rekonsiliasi". TIDAK ada baris CapEx di sini -
+    # beda dari laporan bulanan, Belanja Assets di laporan kuartal/tahunan
+    # MEMANG SUDAH dikapitalisasi jadi Aset Tetap (lihat Neraca/Buku Aset
+    # Tetap), tidak pernah masuk P&L sebagai beban penuh - itu CapEx
+    # sesungguhnya (di Neraca, bukan di sini). Beban Penyusutan (kalau ada
+    # aset) dimasukkan ke OpEx, mengikuti praktik P&L sederhana UMKM.
+    rc.write_pivot_section(ws, r, "RINGKASAN LAYER 2 (roll-up COGS/OpEx)", labels)
+    r += 1
+    cogs_ref_rows = [exp_row_by_cat["Belanja Bahan"], exp_row_by_cat["Belanja Konsumsi"]]
+    rc.write_pivot_formula_row(
+        ws, r, "COGS (Belanja Bahan + Belanja Konsumsi)", labels,
+        lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in cogs_ref_rows),
+        bold=True,
+    )
+    r += 1
+    opex_ref_rows = [
+        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"], exp_row_by_cat["OpEx"],
+        exp_row_by_cat["Reparasi dan Maintenance"], marketing_rnd_row, gaji_row, fee_row,
+    ]
+    if depresiasi_row:
+        opex_ref_rows.append(depresiasi_row)
+    rc.write_pivot_formula_row(
+        ws, r, "OpEx (Belanja Operasional+Overhead+OpEx+Reparasi+Marketing&RnD+Gaji+Biaya Admin Bank"
+               + ("+Penyusutan" if depresiasi_row else "") + ")", labels,
+        lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
+        bold=True,
+    )
     r += 2
 
     rc.write_pivot_section(ws, r, "LAIN-LAIN (perlu verifikasi manual)", labels)
