@@ -122,6 +122,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["layanan"], "category": "Overhead", "sheet_contains": "jago"},
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
     {"any": ["sponsorship", "charity", "donasi"], "category": "Marketing", "sheet_contains": None},
+    {"any": ["riset", "pelatihan"], "category": "Marketing", "sheet_contains": None},
     {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["sahabudin"], "category": "Overhead", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
