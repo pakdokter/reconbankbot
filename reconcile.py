@@ -545,21 +545,28 @@ def last_data_row(ws):
 
 def resolve_account_sheet(hint, sheet_names):
     """Cocokkan teks bebas di kolom Subjek/Objek (mis. 'BRI-567(Biz)',
-    'Rekening Jago + Admin Rp200') ke nama sheet rekening sebenarnya."""
+    'Rekening Jago + Admin Rp200') ke nama sheet rekening sebenarnya.
+
+    Pakai token PALING SPESIFIK (terpanjang) yang cocok, BUKAN sheet
+    pertama yang kebetulan punya token apapun yang cocok - penting kalau
+    ada beberapa rekening berbagi token generik yang sama (mis. dua
+    rekening sama-sama berakhiran '(Biz)': 'BRI-567(Biz)' dan
+    'BCA-292(Biz)' - token 'Biz' pendek dan generik, cocok ke KEDUANYA;
+    tanpa preferensi token terpanjang, sheet yang kebetulan lebih dulu
+    di urutan wb.sheetnames yang menang, walau salah)."""
     if not hint:
         return None
     h = hint.lower()
     best = None
+    best_len = 0
     for name in sheet_names:
         n = name.lower()
         # ambil token pembeda dari nama sheet, contoh nomor rekening / "jago" / "kasir"
         tokens = [t for t in n.replace("(", " ").replace(")", " ").split() if len(t) >= 3]
         for tok in tokens:
-            if tok in h:
+            if tok in h and len(tok) > best_len:
                 best = name
-                break
-        if best:
-            break
+                best_len = len(tok)
     return best
 
 
