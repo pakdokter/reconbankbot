@@ -1742,16 +1742,19 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     write_pivot_section(ws, r, "BEBAN", sheets)
     r += 1
     exp_rows = []
+    exp_row_by_cat = {}
     for cat in INCOME_CATEGORIES_EXPENSE:
         write_pivot_data_row(ws, r, cat, sheets,
                               lambda sheet, cat=cat: sumif_one_sheet(sheet, sheets_last_row[sheet], cat))
         exp_rows.append(r)
+        exp_row_by_cat[cat] = r
         r += 1
     write_pivot_data_row(
         ws, r, "Marketing & RnD", sheets,
         lambda sheet: sumif_multi_one_sheet(sheet, sheets_last_row[sheet], MARKETING_RND_CATEGORY_TEXTS),
     )
     exp_rows.append(r)
+    marketing_rnd_row = r
     r += 1
     # Gaji: dicocokkan lewat KETERANGAN (bukan Kategori) supaya konsisten
     # baik format lama (bulan ada di Kategori) maupun format bank/preformatted
@@ -1762,16 +1765,19 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     write_pivot_data_row(ws, r, f"Gaji Bulan Ini (Gaji {nama_ini or 'Bulan Ini'})", sheets,
                           lambda sheet: sumif_gaji_bulan_formula(sheet, sheets_last_row[sheet], nama_ini))
     exp_rows.append(r)
+    gaji_ini_row = r
     r += 1
     write_pivot_data_row(ws, r, f"Gaji Accrual (Gaji {nama_lalu or 'Accrual'})", sheets,
                           lambda sheet: sumif_gaji_bulan_formula(sheet, sheets_last_row[sheet], nama_lalu))
     exp_rows.append(r)
+    gaji_accrual_row = r
     r += 1
     write_pivot_data_row(
         ws, r, "Gaji Lainnya (bulan lain/tidak disebutkan)", sheets,
         lambda sheet: sumif_gaji_lainnya_formula(sheet, sheets_last_row[sheet], [nama_ini, nama_lalu]),
     )
     exp_rows.append(r)
+    gaji_lainnya_row = r
     r += 1
     # Biaya Admin Bank: gabungan biaya admin bank, biaya admin
     # transfer (mis. via Fliptech, auto-terdeteksi dari Rekonsiliasi kolom
@@ -1790,6 +1796,43 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     r += 1
     total_exp_row = r
     write_pivot_subtotal_row(ws, r, "Total Beban", sheets, exp_rows)
+    r += 2
+
+    # RINGKASAN LAYER 2 (COGS/OpEx/CapEx) - roll-up dari kategori Layer 1
+    # di atas, sesuai "Kontrak Kategori: Bot Konversi -> Bot Rekonsiliasi"
+    # yang disepakati dengan tim bot konversi:
+    #   COGS  = Belanja Bahan + Belanja Konsumsi
+    #   OpEx  = Belanja Operasional + Overhead + OpEx(kategori umum) +
+    #           Reparasi dan Maintenance + Marketing & RnD + Gaji* + Biaya
+    #           Admin Bank
+    #   CapEx = Belanja Assets
+    # Baris Layer 1 di atas TETAP ditampilkan lengkap untuk audit detail -
+    # ini cuma ringkasan tambahan, bukan pengganti.
+    write_pivot_section(ws, r, "RINGKASAN LAYER 2 (roll-up COGS/OpEx/CapEx)", sheets)
+    r += 1
+    cogs_ref_rows = [exp_row_by_cat["Belanja Bahan"], exp_row_by_cat["Belanja Konsumsi"]]
+    write_pivot_formula_row(
+        ws, r, "COGS (Belanja Bahan + Belanja Konsumsi)", sheets,
+        lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in cogs_ref_rows),
+        bold=True,
+    )
+    r += 1
+    opex_ref_rows = [
+        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"], exp_row_by_cat["OpEx"],
+        exp_row_by_cat["Reparasi dan Maintenance"], marketing_rnd_row,
+        gaji_ini_row, gaji_accrual_row, gaji_lainnya_row, fee_row,
+    ]
+    write_pivot_formula_row(
+        ws, r, "OpEx (Belanja Operasional+Overhead+OpEx+Reparasi+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
+        lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
+        bold=True,
+    )
+    r += 1
+    write_pivot_formula_row(
+        ws, r, "CapEx (Belanja Assets)", sheets,
+        lambda cl: f"={cl}{exp_row_by_cat['Belanja Assets']}",
+        bold=True,
+    )
     r += 2
 
     write_pivot_section(ws, r, "LAIN-LAIN (perlu verifikasi manual)", sheets)
