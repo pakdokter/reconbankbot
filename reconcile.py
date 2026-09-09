@@ -87,7 +87,9 @@ CAPITAL_KEYWORDS = shared_rules.get("capital_keywords", [
 # kategori ini akan diverifikasi manual (lihat sheet Rekonsiliasi bagian
 # 5) - user menegaskan ini perlu diaudit satu-satu, bukan otomatis
 # dipercaya begitu saja.
-PERSONAL_EXPENSE_KEYWORDS = shared_rules.get("personal_expense_keywords", ["pengeluaran pribadi"])
+PERSONAL_EXPENSE_KEYWORDS = shared_rules.get("personal_expense_keywords", [
+    "pengeluaran pribadi", "keperluan pribadi", "kepentingan pribadi", "milik pribadi",
+])
 
 # "Transfer Masuk" sendirian terlalu umum untuk langsung dianggap Modal
 # (transfer masuk dari pelanggan/pihak luar seharusnya Penjualan, bukan
@@ -107,6 +109,8 @@ CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keyword
 # (tidak harus berdekatan). "sheet_contains": opsional, cuma berlaku
 # kalau nama sheet mengandung teks ini (case-insensitive).
 _DEFAULT_CATEGORY_OVERRIDE_RULES = [
+    {"any": ["pengeluaran pribadi", "keperluan pribadi", "kepentingan pribadi", "milik pribadi"],
+     "category": "Pengeluaran Pribadi", "sheet_contains": None},
     {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
      "category": "Overhead", "sheet_contains": None},
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
@@ -1848,7 +1852,7 @@ def _validate_category_override_targets():
     known = set(
         INCOME_CATEGORIES_EXPENSE + INCOME_CATEGORIES_REVENUE +
         MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS +
-        OTHER_CATEGORIES + TRANSFER_CATEGORY_TEXTS + ["Modal & Setoran Pemilik"]
+        OTHER_CATEGORIES + TRANSFER_CATEGORY_TEXTS + ["Modal & Setoran Pemilik", "Pengeluaran Pribadi"]
     )
     # 'Kategori Baru' SENGAJA dikecualikan dari 'known' - ini bukan bug,
     # ini SATU-SATUNYA target yang memang sengaja TIDAK dihitung SUMIF
