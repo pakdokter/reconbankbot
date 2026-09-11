@@ -1454,34 +1454,72 @@ def add_effective_category_column(ws, txns):
     ws.column_dimensions[get_column_letter(13)].width = 34
 
 
-def highlight_matched_transfers(wb, matches, combo_matches):
-    """Beri highlight BIRU (TRANSFER_MATCH_FILL) pada baris transaksi di
-    sheet rekening asli (bukan sheet Rekonsiliasi) untuk transfer
-    internal yang SUDAH ketemu pasangannya - baik sisi asal (src) maupun
-    sisi tujuan (dst), supaya kelihatan langsung di sheet rekening mana
-    saja transaksi yang sudah tervalidasi cocok satu sama lain, tanpa
-    perlu bolak-balik ke sheet Rekonsiliasi.
+BCA_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")  # biru
+JAGO_MATCH_FILL = PatternFill("solid", fgColor="FCD9B6")  # orange
+BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 
-    Hanya match dengan confidence High/Medium/Low (dst ketemu) yang
-    dihighlight - 'Needs manual verification' dan 'Not applicable' TIDAK
-    (belum/tidak ketemu pasangan, jadi tidak relevan diberi tanda
-    'cocok'). Split/merge (combo_matches) - src DAN semua parts-nya
-    dihighlight."""
-    def _mark(t):
-        if t is None or t.sheet not in wb.sheetnames:
+
+def _bank_group_fill(sheet_title):
+    """Tentukan warna highlight berdasarkan grup bank tujuan - BCA (semua
+    varian: BCA-887/BCA-417/BCA-292(Biz)) = biru, Jago = orange,
+    BRI (BRI-507/BRI-567(Biz)) = kuning. Rekening lain (Kas-Buku, dst)
+    -> None (tidak ada warna khusus, sesuai permintaan user cuma 3
+    kelompok ini)."""
+    n = sheet_title.lower()
+    if n.startswith("bca"):
+        return BCA_MATCH_FILL
+    if n.startswith("jago"):
+        return JAGO_MATCH_FILL
+    if n.startswith("bri"):
+        return BRI_MATCH_FILL
+    return None
+
+
+def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
+    """Untuk tiap transfer yang SUDAH ketemu pasangannya (matches dengan
+    dst terisi, confidence High/Medium/Low, atau combo_matches):
+    1. KOREKSI Subjek/Objek di kedua sisi (src & dst) supaya benar-benar
+       menyebut rekening lawan transaksinya - banyak data sumber
+       menulis Objek = nama rekening SENDIRI (tidak berguna untuk audit,
+       mis. sheet BCA-292(Biz) isi Objek-nya 'BCA-292(Biz)' juga),
+       padahal sistem SUDAH TAHU pasangan sebenarnya dari hasil
+       pencocokan tanggal+nominal - jadi ditulis ulang jadi akurat.
+    2. HIGHLIGHT warna berdasarkan grup bank TUJUAN uang (bukan asal) -
+       biru=BCA, orange=Jago, kuning=BRI - diterapkan di KEDUA sisi
+       (baris pengirim maupun penerima), supaya audit visual langsung
+       kelihatan kemana uang itu benar-benar mengalir tanpa perlu buka
+       sheet Rekonsiliasi."""
+    def _base_name(sheet_title):
+        return sheet_title.rsplit(" ", 2)[0]
+
+    def _apply(src, dst):
+        if src is None or dst is None:
             return
-        ws = wb[t.sheet]
-        for c in range(1, 10):
-            ws.cell(row=t.row, column=c).fill = TRANSFER_MATCH_FILL
+        if src.sheet not in wb.sheetnames or dst.sheet not in wb.sheetnames:
+            return
+        ws_src = wb[src.sheet]
+        ws_dst = wb[dst.sheet]
+        ws_src.cell(row=src.row, column=8, value=_base_name(dst.sheet))  # Objek asal = tujuan
+        ws_dst.cell(row=dst.row, column=7, value=_base_name(src.sheet))  # Subjek tujuan = asal
+        fill = _bank_group_fill(dst.sheet)
+        if fill is not None:
+            for c in range(1, 10):
+                ws_src.cell(row=src.row, column=c).fill = fill
+                ws_dst.cell(row=dst.row, column=c).fill = fill
 
     for m in matches:
         if m.dst is not None and m.confidence in ("High", "Medium", "Low"):
-            _mark(m.src)
-            _mark(m.dst)
+            _apply(m.src, m.dst)
     for combo in combo_matches:
-        _mark(combo["src"])
+        # split/merge: src (satu sisi) vs 2 parts (sisi lain, di rekening
+        # yang SAMA) - src dianggap "tujuan" kalau nominalnya positif
+        # (uang masuk), kalau tidak src adalah "asal"
+        src = combo["src"]
         for part in combo["parts"]:
-            _mark(part)
+            if src.nominal > 0:
+                _apply(part, src)
+            else:
+                _apply(src, part)
 
 
 # ---------------------------------------------------------------------------
@@ -2425,7 +2463,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
         opening_rows[sname] = opening.row if opening else 2
 
     matches, combo_matches = find_matches(all_txns, account_sheets)
-    highlight_matched_transfers(wb, matches, combo_matches)
+    correct_and_highlight_matched_transfers(wb, matches, combo_matches)
     minus_flags = find_minus_flags(all_txns_by_sheet)
     balance_status = compute_balance_status(all_txns_by_sheet)
     new_category_flags = find_new_category_flags(all_txns_by_sheet)
