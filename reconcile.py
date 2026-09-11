@@ -648,33 +648,42 @@ def _near_miss_candidates(src, all_txns, consumed_ids, max_hasil=3):
         # sejauh ini nominal & tanggal cocok - kenapa tidak terpakai?
         if not t.is_transfer:
             sebab = (
-                f"kategori efektifnya '{t.effective_kategori}' (kategori asli: '{t.kategori}') - "
-                "dianggap BUKAN transfer internal, jadi tidak dipertimbangkan sebagai pasangan. "
-                "Cek apakah kategori ini keliru (mis. ada kata kunci di Keterangan yang salah memicu "
-                "aturan kategori tertentu)."
+                f"Kategori efektifnya '{t.effective_kategori}' (kategori asli: '{t.kategori}') - "
+                "dianggap BUKAN transfer internal, jadi tidak dipertimbangkan sebagai pasangan."
             )
         elif id(t) in consumed_ids:
-            sebab = "sudah terpakai sebagai pasangan transaksi transfer lain - satu transaksi tidak bisa jadi pasangan dua transfer sekaligus."
+            sebab = "Sudah terpakai sebagai pasangan transaksi transfer lain - satu transaksi tidak bisa jadi pasangan dua transfer sekaligus."
         else:
-            sebab = "tidak jelas kenapa tidak terpilih - kemungkinan ada kandidat lain yang skornya lebih baik."
-        rp_nominal = f"{abs(t.nominal):,.0f}".replace(",", ".")
-        rp_diff = f"{nominal_diff:,.0f}".replace(",", ".")
-        hasil.append(
-            f"{t.sheet} baris {t.row} (\"{t.desc}\", Rp{rp_nominal}, selisih tanggal {date_diff} hari, "
-            f"selisih nominal Rp{rp_diff}): {sebab}"
-        )
+            sebab = "Tidak jelas kenapa tidak terpilih - kemungkinan ada kandidat lain yang skornya lebih baik."
+        hasil.append({
+            "sheet": t.sheet, "row": t.row, "desc": t.desc, "nominal": abs(t.nominal),
+            "date_diff": date_diff, "nominal_diff": nominal_diff, "sebab": sebab,
+        })
         if len(hasil) >= max_hasil:
             break
     return hasil
 
 
 def _format_near_miss_note(near_miss_list):
+    """Format daftar kandidat dekat jadi teks BER-BARIS (bukan satu
+    paragraf padat) - tiap kandidat: judul (rekening) lalu poin-poin
+    detail, dipisah baris kosong antar kandidat supaya gampang dipindai
+    mata saat audit."""
     if not near_miss_list:
         return ""
-    if len(near_miss_list) == 1:
-        return " KANDIDAT DEKAT ditemukan: " + near_miss_list[0]
-    bullets = "; ".join(f"({i + 1}) {n}" for i, n in enumerate(near_miss_list))
-    return f" {len(near_miss_list)} KANDIDAT DEKAT ditemukan: {bullets}"
+    rp = lambda n: f"Rp{n:,.0f}".replace(",", ".")
+    blok = [f"{len(near_miss_list)} KANDIDAT DEKAT ditemukan:"]
+    for i, c in enumerate(near_miss_list, start=1):
+        blok.append(
+            f"\n({i}) {c['sheet']}\n"
+            f"- Baris: {c['row']}\n"
+            f"- Keterangan: {c['desc']}\n"
+            f"- Nominal: {rp(c['nominal'])}\n"
+            f"- Selisih tanggal: {c['date_diff']} hari\n"
+            f"- Selisih nominal: {rp(c['nominal_diff'])}\n"
+            f"- Sebab: {c['sebab']}"
+        )
+    return "\n".join(blok)
 
 
 def find_matches(all_txns, sheet_names):
@@ -748,12 +757,19 @@ def find_matches(all_txns, sheet_names):
             if nominal_diff > toleransi:
                 continue
             same_sign = (c.nominal > 0) == (src.nominal > 0)
-            scored.append((1 if same_sign else 0, date_diff, nominal_diff, c, same_sign))
+            # Kas-Buku/Kas Kasir sengaja jadi prioritas PALING TERAKHIR
+            # dipilih - setoran tunai/tarik tunai sering settle bertahap/
+            # tercampur (lihat catatan di banyak kasus rekonsiliasi
+            # sebelumnya), jadi kalau ada kandidat NON-Kas-Buku dengan
+            # tanda yang sama cocoknya, itu didahulukan meski selisih
+            # tanggal/nominalnya sedikit lebih besar dari kandidat Kas-Buku.
+            is_kas_buku = 1 if c.sheet.strip().lower().startswith("kas") else 0
+            scored.append((1 if same_sign else 0, is_kas_buku, date_diff, nominal_diff, c, same_sign))
 
-        scored.sort(key=lambda x: (x[0], x[1], x[2]))
+        scored.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
 
         if scored:
-            _, date_diff, nominal_diff, dst, same_sign = scored[0]
+            _, _, date_diff, nominal_diff, dst, same_sign = scored[0]
             matched_dst_ids.add(id(dst))
             consumed_ids.add(id(src))
             consumed_ids.add(id(dst))
@@ -834,10 +850,10 @@ def find_matches(all_txns, sheet_names):
                     reasoning=(
                         "Tidak ada kandidat dengan nominal berlawanan dalam jendela "
                         f"±{TOLERANCI_HARI} hari di rekening tujuan yang terindikasi "
-                        f"({counterpart_hint or 'tidak teridentifikasi dari Subjek/Objek'}). "
+                        f"({counterpart_hint or 'tidak teridentifikasi dari Subjek/Objek'}).\n"
                         "Kemungkinan: dana masih dalam perjalanan (in-transit), tercatat di "
                         "bulan berikutnya, atau salah kategori."
-                        + _format_near_miss_note(_near_miss_candidates(src, all_txns, consumed_ids))
+                        + (("\n\n" + note) if (note := _format_near_miss_note(_near_miss_candidates(src, all_txns, consumed_ids))) else "")
                     ),
                 )
             )
@@ -1153,6 +1169,12 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
             cell.border = BORDER
             cell.alignment = Alignment(vertical="top", wrap_text=(c == 12))
         ws.cell(row=r, column=11).fill = fill
+        # tinggi baris eksplisit mengikuti jumlah baris teks Alasan Audit
+        # (kolom L bisa multi-baris kalau ada kandidat dekat) - supaya
+        # langsung kelihatan penuh saat dibuka, tidak perlu resize manual
+        n_baris_teks = (m.reasoning or "").count("\n") + 1
+        if n_baris_teks > 1:
+            ws.row_dimensions[r].height = min(15 * n_baris_teks, 400)
         r += 1
 
     section1_data_start = hdr_row + 1
