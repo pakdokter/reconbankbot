@@ -1204,10 +1204,40 @@ def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="K
     write_snapshot_subtotal_row(ws, r, "Total Ekuitas", labels, [saldo_awal_row, laba_row])
     r += 2
 
+    rc.write_pivot_section(ws, r, "LIABILITAS (Hutang)", labels)
+    r += 1
+    hutang_masuk_row = r
+    hutang_masuk_per_month = [sum_category(m["all_txns"], "Hutang Masuk") for m in months]
+    hutang_masuk_kumulatif = []
+    running = 0.0
+    for v in hutang_masuk_per_month:
+        running = round(running + v, 2)
+        hutang_masuk_kumulatif.append(running)
+    write_snapshot_data_row(
+        ws, r, "Hutang Masuk (kumulatif s.d. bulan ini)", labels,
+        lambda label: hutang_masuk_kumulatif[labels.index(label)],
+    )
+    r += 1
+    pembayaran_hutang_row = r
+    ph_per_month = [sum_category(m["all_txns"], "Pembayaran Hutang") for m in months]
+    ph_kumulatif = []
+    running = 0.0
+    for v in ph_per_month:
+        running = round(running + v, 2)
+        ph_kumulatif.append(running)
+    write_snapshot_data_row(
+        ws, r, "Pembayaran Hutang (kumulatif s.d. bulan ini, mengurangi liabilitas)", labels,
+        lambda label: ph_kumulatif[labels.index(label)],
+    )
+    r += 1
+    total_liability_row = r
+    write_snapshot_subtotal_row(ws, r, "Total Liabilitas (Hutang)", labels, [hutang_masuk_row, pembayaran_hutang_row])
+    r += 2
+
     balance_check_row = r
     write_snapshot_formula_row(
-        ws, r, "CEK KESEIMBANGAN (Aset - Ekuitas)", labels,
-        lambda cl: f"={cl}{total_asset_row}-{cl}{total_equity_row}",
+        ws, r, "CEK KESEIMBANGAN (Aset - Ekuitas - Liabilitas)", labels,
+        lambda cl: f"={cl}{total_asset_row}-{cl}{total_equity_row}-{cl}{total_liability_row}",
         bold=True,
     )
     r += 1
@@ -1328,6 +1358,7 @@ def write_quarterly_balance_sheet(wb, months, income_ref, assets, period_word="K
     ws.freeze_panes = "B5"
 
     return {"sheet": name, "total_asset": total_asset_row, "total_equity": total_equity_row,
+            "total_liability": total_liability_row,
             "saldo_awal": saldo_awal_row, "balance_check": balance_check_row,
             "labels": labels, "total_col": rc.pivot_total_col(labels)}
 
