@@ -1548,7 +1548,7 @@ def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
 # Laporan Laba Rugi
 # ---------------------------------------------------------------------------
 
-INCOME_CATEGORIES_REVENUE = ["Penjualan"]
+INCOME_CATEGORIES_REVENUE = ["Penjualan", "Penjualan Shopeefood"]
 
 # Kategori beban yang dicocokkan persis apa adanya (SUMIF biasa)
 INCOME_CATEGORIES_EXPENSE = [
@@ -1558,6 +1558,8 @@ INCOME_CATEGORIES_EXPENSE = [
     "OpEx",
     "Belanja Konsumsi",
     "Reparasi dan Maintenance",
+    "Pajak Daerah",
+    "Biaya Renovasi Atap",
     "Belanja Assets",
 ]
 
@@ -1887,11 +1889,12 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     r += 1
     opex_ref_rows = [
         exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"], exp_row_by_cat["OpEx"],
-        exp_row_by_cat["Reparasi dan Maintenance"], marketing_rnd_row,
+        exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
+        exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row,
         gaji_ini_row, gaji_accrual_row, gaji_lainnya_row, fee_row,
     ]
     write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+OpEx+Reparasi+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
+        ws, r, "OpEx (Belanja Operasional+Overhead+OpEx+Reparasi+Pajak Daerah+Renovasi Atap+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
     )
