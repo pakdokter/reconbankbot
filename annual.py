@@ -235,6 +235,20 @@ def write_ringkasan_eksekutif(wb, months, income_ref, balance_ref, roster_summar
             note="Laba bersih dibagi total pendapatan")
     r += 1
 
+    ws.cell(row=r, column=1, value="ESTIMASI PAJAK FINAL (PPh Final UMKM)")
+    ws.cell(row=r, column=1).font = rc.SECTION_FONT
+    ws.cell(row=r, column=1).fill = rc.SECTION_FILL
+    r += 1
+    pajak_final_row = kpi_row(
+        "Estimasi Pajak Final Terhutang (0,5% dari Total Pendapatan)", f"=B{rev_row}*0.5%",
+        note="TERHUTANG untuk tahun ini, DIBAYAR tahun berikutnya (basis kas transaksi TIDAK mencatat "
+             "ini sebagai beban tahun ini - murni estimasi kewajiban, bukan angka yang sudah dibayar). "
+             "Bukan bagian dari Laba Rugi/Neraca resmi di atas - informasi terpisah untuk perencanaan "
+             "kas tahun depan."
+    )
+    ws.cell(row=r - 1, column=3).alignment = Alignment(wrap_text=True)
+    r += 1
+
     ws.cell(row=r, column=1, value="POSISI KAS")
     ws.cell(row=r, column=1).font = rc.SECTION_FONT
     ws.cell(row=r, column=1).fill = rc.SECTION_FILL
