@@ -149,12 +149,12 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
      "category": "Overhead", "sheet_contains": None},
     {"any": ["pulsa", "parkir", "es batu", "beli masker", "shopee", "ovo", "gopay", "dana",
              "telkomsel", "top up", "isi saldo", "tarikan atm", "ganti uang belanja"],
-     "category": "OpEx", "sheet_contains": None},
-    {"any": ["sisa belanja", "sisa set"], "category": "OpEx", "sheet_contains": None},
+     "category": "Belanja Operasional", "sheet_contains": None},
+    {"any": ["sisa belanja", "sisa set"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["tukang", "reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin",
              "perbaikan bangunan", "perbaiki ac", "perbaiki mesin", "uang ac", "maintenance"],
      "category": "Reparasi dan Maintenance", "sheet_contains": None},
-    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "OpEx", "sheet_contains": None},
+    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
@@ -181,7 +181,7 @@ def _build_transfer_masuk_rules():
                        "category": "Modal & Setoran Pemilik", "sheet_contains": None})
     if employee_keywords:
         rules.append({"all": ["transfer masuk"], "any": employee_keywords,
-                       "category": "OpEx", "sheet_contains": None})
+                       "category": "Belanja Operasional", "sheet_contains": None})
     rules.append({"all": ["transfer masuk"], "none_of": owner_keywords + employee_keywords,
                   "amount_max": 300000, "category": "Penjualan", "sheet_contains": None})
     # Fallback KHUSUS untuk "transfer masuk" yang TIDAK match salah satu
@@ -1646,12 +1646,13 @@ def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
 
 INCOME_CATEGORIES_REVENUE = ["Penjualan", "Penjualan Shopeefood"]
 
-# Kategori beban yang dicocokkan persis apa adanya (SUMIF biasa)
+# Kategori beban yang dicocokkan persis apa adanya (SUMIF biasa) - LAYER
+# 1 (bot konversi), tidak boleh ada istilah Layer 2 (COGS/OpEx/CapEx) di
+# sini, itu murni hasil roll-up di bagian "RINGKASAN LAYER 2" Laba Rugi.
 INCOME_CATEGORIES_EXPENSE = [
     "Belanja Bahan",
     "Belanja Operasional",
     "Overhead",
-    "OpEx",
     "Belanja Konsumsi",
     "Reparasi dan Maintenance",
     "Pajak Daerah",
@@ -1710,7 +1711,12 @@ BANK_FEE_CATEGORY_TEXTS = [
     "Bunga dan Admin Bank",
 ]
 
-OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan"]
+OTHER_CATEGORIES = ["Tip/Minus/Lebih"]
+# 'Penarikan'/'Penerimaan' SENGAJA DIHAPUS dari daftar kategori resmi -
+# terlalu ambigu (staff cash withdrawal vs uang masuk tak terklasifikasi)
+# untuk otomatis diterima begitu saja. Kalau ketemu Kategori persis ini
+# di data sumber, sekarang JATUH ke 'Kategori Baru' (perlu diaudit
+# manual), bukan diam-diam dianggap sudah benar.
 # 'Pembayaran Hutang' SENGAJA dikeluarkan dari sini - pelunasan pokok
 # hutang BUKAN beban bisnis (tidak boleh mengurangi Laba Rugi), itu
 # pengurang LIABILITAS. Ditangani di bagian Liabilitas Neraca bareng
@@ -1989,13 +1995,13 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     )
     r += 1
     opex_ref_rows = [
-        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"], exp_row_by_cat["OpEx"],
+        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"],
         exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
         exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row,
         gaji_ini_row, gaji_accrual_row, gaji_lainnya_row, fee_row,
     ]
     write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+OpEx+Reparasi+Pajak Daerah+Renovasi Atap+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
+        ws, r, "OpEx (Belanja Operasional+Overhead+Reparasi+Pajak Daerah+Renovasi Atap+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
     )
