@@ -300,6 +300,7 @@ def sum_tip_minus(txns):
 
 ASSET_CATEGORY_TEXT = "belanja assets"
 DEPRECIATION_THRESHOLD = 15_000_000  # per Rp15jt kelipatan = +1 tahun masa manfaat
+CICILAN_ASSET_RE = re.compile(r"cicilan\s*-\s*(.+)", re.IGNORECASE)
 
 
 def scan_assets_from_months(months):
@@ -307,8 +308,17 @@ def scan_assets_from_months(months):
     aset tetap dengan jadwal penyusutan garis lurus. Tanggal beli disimpan
     ABSOLUT (acquired_year/acquired_month), bukan index relatif ke laporan
     ini - supaya bisa digabung dengan aset dari laporan lain (kontinuitas
-    lintas kuartal/tahun) lewat merge_asset_lists()."""
-    assets = []
+    lintas kuartal/tahun) lewat merge_asset_lists().
+
+    Instruksi bot konversi (kontrak kategori v3, section 6): kenali pola
+    Keterangan 'Cicilan - <nama item>' - kumpulkan SEMUA baris cicilan
+    dengan nama item yang SAMA (lintas bulan sekalipun) jadi SATU total
+    aset (tanggal akuisisi = cicilan PERTAMA, nilai = SUMSemua cicilan)
+    sebelum dimasukkan ke jadwal penyusutan - bukan tiap cicilan jadi
+    aset terpisah sendiri-sendiri, yang akan salah menganggap tiap
+    cicilan sebagai pembelian baru yang berbeda."""
+    cicilan_groups = {}  # nama item (lower) -> {"cost": total, "first": (year, month, label, desc_asli)}
+    other_txns = []
     for m in months:
         for t in m["all_txns"]:
             if (t.kategori or "").strip().lower() != ASSET_CATEGORY_TEXT:
@@ -316,15 +326,41 @@ def scan_assets_from_months(months):
             cost = abs(t.nominal)
             if cost <= 0:
                 continue
-            n_tahun = max(math.ceil(cost / DEPRECIATION_THRESHOLD), 1)
-            useful_life_months = n_tahun * 12
-            monthly_dep = round(cost / useful_life_months, 2)
-            assets.append({
-                "acquired_year": m["year"], "acquired_month": m["month"],
-                "label": m["label"], "desc": t.desc, "cost": cost,
-                "n_tahun": n_tahun, "useful_life_months": useful_life_months,
-                "monthly_dep": monthly_dep,
-            })
+            match = CICILAN_ASSET_RE.search(t.desc or "")
+            if match:
+                item_key = match.group(1).strip().lower()
+                g = cicilan_groups.setdefault(item_key, {
+                    "cost": 0.0, "acquired_year": m["year"], "acquired_month": m["month"],
+                    "label": m["label"], "desc": match.group(1).strip(),
+                })
+                g["cost"] += cost
+                # cicilan PERTAMA (tanggal paling awal) yang jadi tanggal akuisisi
+                if (m["year"], m["month"]) < (g["acquired_year"], g["acquired_month"]):
+                    g["acquired_year"], g["acquired_month"], g["label"] = m["year"], m["month"], m["label"]
+            else:
+                other_txns.append((m, t, cost))
+
+    assets = []
+    for g in cicilan_groups.values():
+        cost = round(g["cost"], 2)
+        n_tahun = max(math.ceil(cost / DEPRECIATION_THRESHOLD), 1)
+        useful_life_months = n_tahun * 12
+        assets.append({
+            "acquired_year": g["acquired_year"], "acquired_month": g["acquired_month"],
+            "label": g["label"], "desc": g["desc"], "cost": cost,
+            "n_tahun": n_tahun, "useful_life_months": useful_life_months,
+            "monthly_dep": round(cost / useful_life_months, 2),
+        })
+    for m, t, cost in other_txns:
+        n_tahun = max(math.ceil(cost / DEPRECIATION_THRESHOLD), 1)
+        useful_life_months = n_tahun * 12
+        monthly_dep = round(cost / useful_life_months, 2)
+        assets.append({
+            "acquired_year": m["year"], "acquired_month": m["month"],
+            "label": m["label"], "desc": t.desc, "cost": cost,
+            "n_tahun": n_tahun, "useful_life_months": useful_life_months,
+            "monthly_dep": monthly_dep,
+        })
     return assets
 
 
@@ -990,13 +1026,16 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     r += 1
     opex_ref_rows = [
         exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"],
+        exp_row_by_cat["Konsumsi dan Liburan"], exp_row_by_cat["Belanja Utilitas"],
+        exp_row_by_cat["Tools dan Equipments"], exp_row_by_cat["Kemasan"],
+        exp_row_by_cat["Subscription"], exp_row_by_cat["Sewa dan Mantenantce Bangunan"],
         exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
         exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row, gaji_row, fee_row,
     ]
     if depresiasi_row:
         opex_ref_rows.append(depresiasi_row)
     rc.write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+Reparasi+Marketing&RnD+Gaji+Biaya Admin Bank"
+        ws, r, "OpEx (Belanja Operasional+Overhead+Konsumsi&Liburan+Utilitas+Tools&Equip+Kemasan+Subscription+Sewa&Maintenance Bangunan+Reparasi+Marketing&RnD+Gaji+Biaya Admin Bank"
                + ("+Penyusutan" if depresiasi_row else "") + ")", labels,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
