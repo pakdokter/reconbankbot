@@ -990,7 +990,8 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     r += 1
     opex_ref_rows = [
         exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"], exp_row_by_cat["OpEx"],
-        exp_row_by_cat["Reparasi dan Maintenance"], marketing_rnd_row, gaji_row, fee_row,
+        exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
+        exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row, gaji_row, fee_row,
     ]
     if depresiasi_row:
         opex_ref_rows.append(depresiasi_row)
