@@ -989,14 +989,14 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     )
     r += 1
     opex_ref_rows = [
-        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"], exp_row_by_cat["OpEx"],
+        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"],
         exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
         exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row, gaji_row, fee_row,
     ]
     if depresiasi_row:
         opex_ref_rows.append(depresiasi_row)
     rc.write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+OpEx+Reparasi+Marketing&RnD+Gaji+Biaya Admin Bank"
+        ws, r, "OpEx (Belanja Operasional+Overhead+Reparasi+Marketing&RnD+Gaji+Biaya Admin Bank"
                + ("+Penyusutan" if depresiasi_row else "") + ")", labels,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
