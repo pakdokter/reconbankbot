@@ -56,6 +56,7 @@ TRANSFER_KEYWORDS = shared_rules.get("transfer_keywords", [
     "transfer internal",
     "transfer lainnya",
     "transaksi internal",
+    "pemindahbukuan",
 ])
 
 # Kata kunci di KETERANGAN (bukan kategori) yang juga menandakan transfer
@@ -134,27 +135,49 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["layanan"], "category": "Overhead", "sheet_contains": "jago"},
     {"any": ["fb", "facebook", "meta ads"], "category": "Marketing", "sheet_contains": None},
     {"any": ["sponsorship", "charity", "donasi"], "category": "Marketing", "sheet_contains": None},
-    {"any": ["riset", "pelatihan"], "category": "Marketing", "sheet_contains": None},
-    {"any": ["masuya graha trikencana", "sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
-    {"any": ["sahabudin"], "category": "Overhead", "sheet_contains": None},
+    {"any": ["masuya graha trikencana"], "category": "Belanja Bahan", "sheet_contains": None},
+    {"any": ["masuya graha trike"], "category": "Belanja Bahan", "sheet_contains": None},
+    {"any": ["sukanda", "dineta"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
+    {"any": ["sahabudin"], "category": "Overhead", "sheet_contains": None},
     {"any": ["modal & setoran pemilik", "modal dan setoran pemilik"], "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "none_of": ["bayar hutang", "bayar pinjaman", "cicilan hutang", "cicilan pinjaman"],
      "direction": "masuk", "category": "Hutang Masuk", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
+    {"any": ["pemindahbukuan", "transfer internal"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["tarik tunai"], "category": "Penjualan", "sheet_contains": "kas"},
-    {"any": ["sewa", "listrik", "pln", "air sto", "utilitas", "web", "spotify", "telkom"],
+    # Sewa dan Mantenantce Bangunan (nama kategori SENGAJA ejaan ini,
+    # sesuai kontrak kategori v3 dari bot konversi) - dicek SEBELUM aturan
+    # Belanja Utilitas/Overhead yang lebih generik, karena kata kunci di
+    # sini (Kabel/Listrik, dst) sering tumpang tindih dengan utilitas
+    # umum - urutan menang duluan penting.
+    {"any": ["sewa bangunan", "renovasi bangunan", "biaya tukang", "ongkos tukang", "bahan bangunan",
+             "renovasi kabel", "kabel", "lampu", "toren", "besi", "keramik", "pipa", "westafel",
+             "wc", "keran", "depo bangunan", "mitra 10", "toko bangunan"],
+     "category": "Sewa dan Mantenantce Bangunan", "sheet_contains": None},
+    {"any": ["sewa", "utilitas", "web", "spotify"],
      "category": "Overhead", "sheet_contains": None},
-    {"any": ["pulsa", "parkir", "es batu", "beli masker", "shopee", "ovo", "gopay", "dana",
-             "telkomsel", "top up", "isi saldo", "tarikan atm", "ganti uang belanja"],
+    {"any": ["parkir", "penyetakan", "stiker", "sticker", "print", "cetak", "sablon"],
+     "category": "Overhead", "sheet_contains": None},
+    {"any": ["pulsa", "my telkomsel", "pulsa simpati", "telkomsel", "telkom", "air pdam", "pdam",
+             "listrik", "pln"],
+     "category": "Belanja Utilitas", "sheet_contains": None},
+    {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
+    {"any": ["belanja tools", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
+    {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
+    {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
+    {"any": ["nanda audia agustin"], "category": "Kemasan", "sheet_contains": None},
+    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Kemasan", "sheet_contains": None},
+    {"any": ["beli masker", "shopee", "ovo", "gopay", "dana", "top up", "isi saldo", "tarikan atm",
+             "ganti uang belanja", "es batu"],
      "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["sisa belanja", "sisa set"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["tukang", "reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin",
              "perbaikan bangunan", "perbaiki ac", "perbaiki mesin", "uang ac", "maintenance"],
      "category": "Reparasi dan Maintenance", "sheet_contains": None},
-    {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Belanja Operasional", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
@@ -297,13 +320,19 @@ class Txn:
     def is_new_debt_declaration(self):
         """True kalau transaksi ini kemungkinan besar PENCAIRAN HUTANG
         BARU (bukan cicilan/pembayaran hutang yang sudah ada) - dicek
-        dari kata kunci eksplisit di Keterangan/Keterangan Tambahan/
-        Objek/Subjek, DAN uangnya masuk (kredit). Tidak mengubah
-        kategori efektif - cuma dipakai untuk daftar audit terpisah
-        (Rekonsiliasi bagian 6) yang mengingatkan user menambahkan baris
-        baru di Buku Hutang (laporan kuartal/tahunan)."""
+        dari effective_kategori == 'Hutang Masuk' (konvensi bot konversi
+        terbaru: kategori ini SELALU ditulis eksplisit untuk pencairan
+        hutang, bukan cuma diselipkan sebagai kata kunci di Keterangan)
+        ATAU kata kunci eksplisit (jaring pengaman untuk data lama/
+        sumber lain yang belum ikut konvensi ini), DAN uangnya masuk
+        (kredit). Tidak mengubah kategori efektif - cuma dipakai untuk
+        daftar audit terpisah (Rekonsiliasi bagian 6) yang mengingatkan
+        user menambahkan baris baru di Buku Hutang (laporan kuartal/
+        tahunan)."""
         if self.nominal <= 0:
             return False
+        if (self.effective_kategori or "").strip().lower() == "hutang masuk":
+            return True
         text = f"{self.desc or ''} {self.ket or ''} {self.objek or ''} {self.subjek or ''}".lower()
         return any(_override_keyword_found(kw, text) for kw in NEW_DEBT_KEYWORDS)
 
@@ -1464,18 +1493,20 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
     if new_debt_flags:
         ws.cell(row=r, column=1, value=(
             "Transaksi berikut menyebut kata kunci pencairan hutang/pinjaman baru (bukan cicilan) - "
-            "kategorinya SUDAH otomatis benar (Modal & Setoran Pemilik), TAPI reconcile.py bulanan "
-            "TIDAK punya Buku Hutang sendiri (itu cuma ada di laporan kuartal/tahunan). Salin detail "
-            "di bawah ini jadi baris baru di sheet 'Buku Hutang' pada laporan kuartal/tahunan "
-            "berikutnya - Nilai Pinjaman diisi manual (bisa beda dari Nilai Diterima kalau ada potongan "
-            "biaya di awal)."
+            "kategorinya SUDAH otomatis benar (Hutang Masuk, masuk Liabilitas di Neraca), TAPI "
+            "reconcile.py bulanan TIDAK punya Buku Hutang sendiri (itu cuma ada di laporan kuartal/"
+            "tahunan). Salin detail di bawah ini jadi baris baru di sheet 'Buku Hutang' pada laporan "
+            "kuartal/tahunan berikutnya - Nilai Pinjaman diisi manual (bisa beda dari Nilai Diterima "
+            "kalau ada potongan biaya di awal). Pemberi pinjaman diambil dari kolom Objek (konvensi bot "
+            "konversi: Keterangan 'Hutang Baru - <Objek>', nama pemberi hutang ADA DI OBJEK, bukan di "
+            "Keterangan langsung)."
         ))
         ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
         ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
-        ws.row_dimensions[r].height = 55
+        ws.row_dimensions[r].height = 68
         r += 1
-        headers6 = ["Rekening", "Tanggal Pinjam", "Keterangan", "Pemberi Pinjaman (dari Subjek)", "Nilai Diterima", "Objek"]
+        headers6 = ["Rekening", "Tanggal Pinjam", "Keterangan", "Pemberi Pinjaman (dari Objek)", "Nilai Diterima", "Subjek"]
         hdr_row6 = r
         for i, h in enumerate(headers6, start=1):
             ws.cell(row=hdr_row6, column=i, value=h)
@@ -1485,9 +1516,9 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
             ws.cell(row=r, column=1, value=t.sheet)
             ws.cell(row=r, column=2, value=coerce_date(t.date))
             ws.cell(row=r, column=3, value=t.desc)
-            ws.cell(row=r, column=4, value=t.subjek)
+            ws.cell(row=r, column=4, value=t.objek)
             ws.cell(row=r, column=5, value=t.nominal)
-            ws.cell(row=r, column=6, value=t.objek)
+            ws.cell(row=r, column=6, value=t.subjek)
             ws.cell(row=r, column=2).number_format = "dd/mm/yyyy"
             ws.cell(row=r, column=5).number_format = NUMBER_FORMAT
             for c in range(1, len(headers6) + 1):
@@ -1654,6 +1685,12 @@ INCOME_CATEGORIES_EXPENSE = [
     "Belanja Operasional",
     "Overhead",
     "Belanja Konsumsi",
+    "Konsumsi dan Liburan",
+    "Belanja Utilitas",
+    "Tools dan Equipments",
+    "Kemasan",
+    "Subscription",
+    "Sewa dan Mantenantce Bangunan",
     "Reparasi dan Maintenance",
     "Pajak Daerah",
     "Biaya Renovasi Atap",
@@ -1664,7 +1701,7 @@ INCOME_CATEGORIES_EXPENSE = [
 # dulu "Riset dan Pengembangan" (kategori baru, dipicu keyword "Pelatihan")
 # tidak terdaftar sama sekali di INCOME_CATEGORIES_EXPENSE, jadi uangnya
 # hilang dari Laba Rugi (sumber selisih Neraca di BCA).
-MARKETING_RND_CATEGORY_TEXTS = ["Marketing", "Riset dan Pengembangan"]
+MARKETING_RND_CATEGORY_TEXTS = ["Marketing", "Riset dan Development"]
 
 # Gaji: dulu satu baris per "Gaji <Bulan> <Tahun>" (mis. "Gaji Desember 2024")
 # Gaji: dulu satu baris per "Gaji <Bulan> <Tahun>" (mis. "Gaji Desember 2024")
@@ -1996,12 +2033,15 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     r += 1
     opex_ref_rows = [
         exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"],
+        exp_row_by_cat["Konsumsi dan Liburan"], exp_row_by_cat["Belanja Utilitas"],
+        exp_row_by_cat["Tools dan Equipments"], exp_row_by_cat["Kemasan"],
+        exp_row_by_cat["Subscription"], exp_row_by_cat["Sewa dan Mantenantce Bangunan"],
         exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
         exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row,
         gaji_ini_row, gaji_accrual_row, gaji_lainnya_row, fee_row,
     ]
     write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+Reparasi+Pajak Daerah+Renovasi Atap+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
+        ws, r, "OpEx (Belanja Operasional+Overhead+Konsumsi&Liburan+Utilitas+Tools&Equip+Kemasan+Subscription+Sewa&Maintenance Bangunan+Reparasi+Pajak Daerah+Renovasi Atap+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
     )
