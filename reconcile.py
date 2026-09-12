@@ -91,6 +91,18 @@ PERSONAL_EXPENSE_KEYWORDS = shared_rules.get("personal_expense_keywords", [
     "pengeluaran pribadi", "keperluan pribadi", "kepentingan pribadi", "milik pribadi",
 ])
 
+# Deklarasi HUTANG BARU yang masuk lewat transfer bank - kata kunci ini
+# TIDAK mengubah kategori (transaksi "hutang"/"pinjaman" + arah masuk
+# SUDAH otomatis jadi Modal & Setoran Pemilik lewat aturan yang ada di
+# CATEGORY_OVERRIDE_RULES), tujuannya CUMA menandai transaksi ini untuk
+# daftar audit terpisah (Rekonsiliasi bagian 6) - supaya user diingatkan
+# menambahkan baris baru di Buku Hutang (laporan kuartal/tahunan) tanpa
+# harus scroll manual cari sendiri transaksi mana yang perlu didaftarkan.
+NEW_DEBT_KEYWORDS = shared_rules.get("new_debt_keywords", [
+    "hutang baru", "pinjaman baru", "terima pinjaman", "terima hutang",
+    "pinjaman cair", "hutang cair", "pencairan pinjaman", "pencairan hutang",
+])
+
 # "Transfer Masuk" sendirian terlalu umum untuk langsung dianggap Modal
 # (transfer masuk dari pelanggan/pihak luar seharusnya Penjualan, bukan
 # Modal) - jadi HANYA dianggap setara Modal & Setoran Pemilik kalau
@@ -128,7 +140,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["muh yani sh", "muh. yani sh", "muhammad yani sh"], "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["modal & setoran pemilik", "modal dan setoran pemilik"], "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "none_of": ["bayar hutang", "bayar pinjaman", "cicilan hutang", "cicilan pinjaman"],
-     "direction": "masuk", "category": "Modal & Setoran Pemilik", "sheet_contains": None},
+     "direction": "masuk", "category": "Hutang Masuk", "sheet_contains": None},
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
@@ -189,6 +201,7 @@ CATEGORY_OVERRIDE_RULES = _STATIC_CATEGORY_OVERRIDE_RULES + _build_transfer_masu
 _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_category_override", [
     "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
     "saldo awal", "saldo awal bulan", "modal", "pengeluaran pribadi",
+    "hutang masuk", "pembayaran hutang",
 ]))
 
 
@@ -265,8 +278,12 @@ class Txn:
             return True
         # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
         # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
-        # bukan pindah antar rekening sendiri) atau pengeluaran pribadi
-        if any(kw in k for kw in CAPITAL_KEYWORDS) or any(kw in k for kw in PERSONAL_EXPENSE_KEYWORDS):
+        # bukan pindah antar rekening sendiri), pengeluaran pribadi, atau
+        # hutang masuk/pembayaran hutang (uang dari/ke PIHAK LUAR, bukan
+        # pindah antar rekening sendiri - jangan dicoba dicocokkan sebagai
+        # transfer internal)
+        if (any(kw in k for kw in CAPITAL_KEYWORDS) or any(kw in k for kw in PERSONAL_EXPENSE_KEYWORDS)
+                or k == "hutang masuk" or k == "pembayaran hutang"):
             return False
         d = (self.desc or "").lower()
         return any(kw in d for kw in DESC_TRANSFER_KEYWORDS)
@@ -275,6 +292,20 @@ class Txn:
     def is_personal_expense(self):
         k = (self.effective_kategori or "").lower()
         return any(kw in k for kw in PERSONAL_EXPENSE_KEYWORDS)
+
+    @property
+    def is_new_debt_declaration(self):
+        """True kalau transaksi ini kemungkinan besar PENCAIRAN HUTANG
+        BARU (bukan cicilan/pembayaran hutang yang sudah ada) - dicek
+        dari kata kunci eksplisit di Keterangan/Keterangan Tambahan/
+        Objek/Subjek, DAN uangnya masuk (kredit). Tidak mengubah
+        kategori efektif - cuma dipakai untuk daftar audit terpisah
+        (Rekonsiliasi bagian 6) yang mengingatkan user menambahkan baris
+        baru di Buku Hutang (laporan kuartal/tahunan)."""
+        if self.nominal <= 0:
+            return False
+        text = f"{self.desc or ''} {self.ket or ''} {self.objek or ''} {self.subjek or ''}".lower()
+        return any(_override_keyword_found(kw, text) for kw in NEW_DEBT_KEYWORDS)
 
     @property
     def is_tip_minus_variant(self):
@@ -982,13 +1013,21 @@ def compute_balance_status(all_txns_by_sheet):
         modal = sum_modal(txns)
         pengeluaran_pribadi = sum_personal_expense(txns)
         ekuitas = saldo_awal + modal + pengeluaran_pribadi + laba_bersih
+        # Liabilitas (Hutang) - TERPISAH dari Ekuitas (hutang ke pihak
+        # luar, bukan modal pemilik). Pembayaran Hutang (pelunasan pokok)
+        # SENGAJA dikeluarkan dari OTHER_CATEGORIES/Laba Rugi supaya tidak
+        # dobel hitung di sini - itu pengurang liabilitas, bukan beban.
+        hutang_masuk = sum_exact(txns, "Hutang Masuk")
+        pembayaran_hutang = sum_exact(txns, "Pembayaran Hutang")
+        liabilitas = hutang_masuk + pembayaran_hutang
         transfer_bersih = sum_multi(txns, TRANSFER_CATEGORY_TEXTS)
-        selisih = round((total_aset - ekuitas) - transfer_bersih, 2)
+        selisih = round((total_aset - ekuitas - liabilitas) - transfer_bersih, 2)
         kategori_baru_txns = [t for t in txns if t.effective_kategori == "Kategori Baru"]
         kategori_baru_total = round(sum(t.nominal for t in kategori_baru_txns), 2)
         results[sheet] = {
             "total_aset": round(total_aset, 2),
             "ekuitas": round(ekuitas, 2),
+            "liabilitas": round(liabilitas, 2),
             "transfer_bersih": round(transfer_bersih, 2),
             "selisih": selisih,
             "n_kategori_baru": len(kategori_baru_txns),
@@ -1064,6 +1103,20 @@ def find_personal_expense_flags(all_txns_by_sheet):
     return flags
 
 
+def find_new_debt_flags(all_txns_by_sheet):
+    """Kumpulkan transaksi yang kemungkinan besar pencairan HUTANG BARU
+    (lihat NEW_DEBT_KEYWORDS) - dipakai untuk daftar audit di sheet
+    Rekonsiliasi bagian 6, mengingatkan user menambahkan baris baru di
+    Buku Hutang (laporan kuartal/tahunan) - reconcile.py sendiri TIDAK
+    punya Buku Hutang (itu cuma ada di quarterly.py/annual.py)."""
+    flags = []
+    for sheet, txns in all_txns_by_sheet.items():
+        for t in txns:
+            if t.is_new_debt_declaration:
+                flags.append(t)
+    return flags
+
+
 # ---------------------------------------------------------------------------
 # Penulisan sheet Rekonsiliasi
 # ---------------------------------------------------------------------------
@@ -1081,7 +1134,7 @@ def conf_fill(conf):
     return {"High": HIGH_FILL, "Medium": MED_FILL, "Low": LOW_FILL}.get(conf, LOW_FILL)
 
 
-def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None, new_category_flags=None, personal_expense_flags=None):
+def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_status=None, new_category_flags=None, personal_expense_flags=None, new_debt_flags=None):
     if "Rekonsiliasi" in wb.sheetnames:
         del wb["Rekonsiliasi"]
     ws = wb.create_sheet("Rekonsiliasi")
@@ -1403,6 +1456,49 @@ def write_rekonsiliasi_sheet(wb, matches, combo_matches, minus_flags, balance_st
         ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
         r += 1
 
+    r += 1
+    ws.cell(row=r, column=1, value="6. KEMUNGKINAN HUTANG BARU (perlu ditambahkan ke Buku Hutang)")
+    ws.cell(row=r, column=1).font = SECTION_FONT
+    ws.cell(row=r, column=1).fill = SECTION_FILL
+    r += 1
+    if new_debt_flags:
+        ws.cell(row=r, column=1, value=(
+            "Transaksi berikut menyebut kata kunci pencairan hutang/pinjaman baru (bukan cicilan) - "
+            "kategorinya SUDAH otomatis benar (Modal & Setoran Pemilik), TAPI reconcile.py bulanan "
+            "TIDAK punya Buku Hutang sendiri (itu cuma ada di laporan kuartal/tahunan). Salin detail "
+            "di bawah ini jadi baris baru di sheet 'Buku Hutang' pada laporan kuartal/tahunan "
+            "berikutnya - Nilai Pinjaman diisi manual (bisa beda dari Nilai Diterima kalau ada potongan "
+            "biaya di awal)."
+        ))
+        ws.cell(row=r, column=1).font = Font(italic=True, size=9, color="6B7280")
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        ws.row_dimensions[r].height = 55
+        r += 1
+        headers6 = ["Rekening", "Tanggal Pinjam", "Keterangan", "Pemberi Pinjaman (dari Subjek)", "Nilai Diterima", "Objek"]
+        hdr_row6 = r
+        for i, h in enumerate(headers6, start=1):
+            ws.cell(row=hdr_row6, column=i, value=h)
+        style_header(ws, hdr_row6, len(headers6))
+        r += 1
+        for t in sorted(new_debt_flags, key=lambda t: _sort_key(t.date)):
+            ws.cell(row=r, column=1, value=t.sheet)
+            ws.cell(row=r, column=2, value=coerce_date(t.date))
+            ws.cell(row=r, column=3, value=t.desc)
+            ws.cell(row=r, column=4, value=t.subjek)
+            ws.cell(row=r, column=5, value=t.nominal)
+            ws.cell(row=r, column=6, value=t.objek)
+            ws.cell(row=r, column=2).number_format = "dd/mm/yyyy"
+            ws.cell(row=r, column=5).number_format = NUMBER_FORMAT
+            for c in range(1, len(headers6) + 1):
+                ws.cell(row=r, column=c).border = BORDER
+                ws.cell(row=r, column=c).fill = TRANSFER_MATCH_FILL
+            r += 1
+    else:
+        ws.cell(row=r, column=1, value="Tidak ada transaksi yang menyebut pencairan hutang/pinjaman baru bulan ini.")
+        ws.cell(row=r, column=1).font = Font(italic=True, color="6B7280")
+        r += 1
+
     widths = [22, 12, 26, 14, 22, 12, 26, 14, 10, 14, 14, 40, 12, 22, 20]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -1614,7 +1710,11 @@ BANK_FEE_CATEGORY_TEXTS = [
     "Bunga dan Admin Bank",
 ]
 
-OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan", "Pembayaran Hutang"]
+OTHER_CATEGORIES = ["Tip/Minus/Lebih", "Penarikan", "Penerimaan"]
+# 'Pembayaran Hutang' SENGAJA dikeluarkan dari sini - pelunasan pokok
+# hutang BUKAN beban bisnis (tidak boleh mengurangi Laba Rugi), itu
+# pengurang LIABILITAS. Ditangani di bagian Liabilitas Neraca bareng
+# 'Hutang Masuk', bukan di Laba Rugi - lihat write_balance_sheet.
 
 
 def _is_recognized_category(kategori):
@@ -1638,7 +1738,8 @@ def _is_recognized_category(kategori):
     known_exact = {
         c.lower() for c in (
             INCOME_CATEGORIES_EXPENSE + INCOME_CATEGORIES_REVENUE +
-            MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS + OTHER_CATEGORIES
+            MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS + OTHER_CATEGORIES +
+            ["Hutang Masuk", "Pembayaran Hutang"]
         )
     }
     return k in known_exact
@@ -1966,7 +2067,8 @@ def _validate_category_override_targets():
     known = set(
         INCOME_CATEGORIES_EXPENSE + INCOME_CATEGORIES_REVENUE +
         MARKETING_RND_CATEGORY_TEXTS + BANK_FEE_CATEGORY_TEXTS +
-        OTHER_CATEGORIES + TRANSFER_CATEGORY_TEXTS + ["Modal & Setoran Pemilik", "Pengeluaran Pribadi"]
+        OTHER_CATEGORIES + TRANSFER_CATEGORY_TEXTS +
+        ["Modal & Setoran Pemilik", "Pengeluaran Pribadi", "Hutang Masuk", "Pembayaran Hutang"]
     )
     # 'Kategori Baru' SENGAJA dikecualikan dari 'known' - ini bukan bug,
     # ini SATU-SATUNYA target yang memang sengaja TIDAK dihitung SUMIF
@@ -2048,10 +2150,24 @@ def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_en
     write_pivot_subtotal_row(ws, r, "Total Ekuitas", sheets, [saldo_awal_row, laba_row])
     r += 2
 
+    write_pivot_section(ws, r, "LIABILITAS (Hutang)", sheets)
+    r += 1
+    hutang_masuk_row = r
+    write_pivot_data_row(ws, r, "Hutang Masuk (bulan ini)", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Hutang Masuk"))
+    r += 1
+    pembayaran_hutang_row = r
+    write_pivot_data_row(ws, r, "Pembayaran Hutang (bulan ini, mengurangi liabilitas)", sheets,
+                          lambda sheet: sumif_one_sheet(sheet, sheets_last_row[sheet], "Pembayaran Hutang"))
+    r += 1
+    total_liability_row = r
+    write_pivot_subtotal_row(ws, r, "Total Liabilitas (Hutang)", sheets, [hutang_masuk_row, pembayaran_hutang_row])
+    r += 2
+
     balance_check_row = r
     write_pivot_formula_row(
-        ws, r, "CEK KESEIMBANGAN (Aset - Ekuitas)", sheets,
-        lambda cl: f"={cl}{total_asset_row}-{cl}{total_equity_row}",
+        ws, r, "CEK KESEIMBANGAN (Aset - Ekuitas - Liabilitas)", sheets,
+        lambda cl: f"={cl}{total_asset_row}-{cl}{total_equity_row}-{cl}{total_liability_row}",
         bold=True,
     )
     r += 1
@@ -2093,6 +2209,7 @@ def write_balance_sheet(wb, sheets_last_row, opening_rows, income_ref, period_en
     ws.column_dimensions[col_letter(pivot_total_col(sheets))].width = 18
     ws.freeze_panes = "B5"
     return ws, {"total_asset": total_asset_row, "total_equity": total_equity_row,
+                "total_liability": total_liability_row,
                 "saldo_awal": saldo_awal_row, "balance_check": balance_check_row,
                 "transfer_row": transfer_row, "residual_row": residual_row,
                 "sheet": name, "sheets": sheets, "total_col": pivot_total_col(sheets)}
@@ -2493,6 +2610,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
     balance_status = compute_balance_status(all_txns_by_sheet)
     new_category_flags = find_new_category_flags(all_txns_by_sheet)
     personal_expense_flags = find_personal_expense_flags(all_txns_by_sheet)
+    new_debt_flags = find_new_debt_flags(all_txns_by_sheet)
 
     # transaksi yang sudah terjelaskan lewat split/merge tidak perlu lagi
     # tampil sebagai "Needs manual verification" biasa di bagian 1
@@ -2506,7 +2624,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
         if m.dst is not None or id(m.src) not in combo_covered_ids
     ]
 
-    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status, new_category_flags, personal_expense_flags)
+    ws_recon, recon_range = write_rekonsiliasi_sheet(wb, matches_section1, combo_matches, minus_flags, balance_status, new_category_flags, personal_expense_flags, new_debt_flags)
 
     order = list(account_sheets) + ["Rekonsiliasi"]
 
@@ -2556,6 +2674,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
         "n_balance_issues": n_balance_issues,
         "n_new_category": len(new_category_flags),
         "n_personal_expense": len(personal_expense_flags),
+        "n_new_debt": len(new_debt_flags),
         "with_statements": actually_write_statements,
         "period_label": period_label,
         "no_issues": no_issues,
