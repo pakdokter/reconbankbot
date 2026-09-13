@@ -167,7 +167,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
              "listrik", "pln"],
      "category": "Belanja Utilitas", "sheet_contains": None},
     {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
-    {"any": ["belanja tools", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["belanja tools","cutleries", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
