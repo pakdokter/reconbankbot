@@ -156,7 +156,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["sewa bangunan", "renovasi bangunan", "biaya tukang", "ongkos tukang", "bahan bangunan",
              "renovasi kabel", "kabel", "lampu", "toren", "besi", "keramik", "pipa", "westafel",
              "wc", "keran", "depo bangunan", "mitra 10", "toko bangunan"],
-     "category": "Sewa dan Mantenantce Bangunan", "sheet_contains": None},
+     "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
     {"any": ["sewa", "utilitas", "web", "spotify"],
      "category": "Overhead", "sheet_contains": None},
     {"any": ["parkir", "penyetakan", "stiker", "sticker", "print", "cetak", "sablon"],
@@ -173,12 +173,25 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Kemasan", "sheet_contains": None},
     {"any": ["beli masker", "shopee", "ovo", "gopay", "dana", "top up", "isi saldo", "tarikan atm",
              "ganti uang belanja", "es batu"],
-     "category": "Belanja Operasional", "sheet_contains": None},
-    {"any": ["sisa belanja", "sisa set"], "category": "Belanja Operasional", "sheet_contains": None},
+     "category": "Overhead", "sheet_contains": None},
+    {"any": ["sisa belanja", "sisa set"], "category": "Overhead", "sheet_contains": None},
     {"any": ["tukang", "reparasi", "service ac", "service mesin", "perbaikan ac", "perbaikan mesin",
              "perbaikan bangunan", "perbaiki ac", "perbaiki mesin", "uang ac", "maintenance"],
-     "category": "Reparasi dan Maintenance", "sheet_contains": None},
+     "category": "Reparasi dan Maintenance Tools dan Mesin", "sheet_contains": None},
     {"any": ["minus", "lebih", "cust", "tip", "tips"], "category": "Tip/Minus/Lebih", "sheet_contains": None},
+    # Jaring pengaman terakhir: SEMUA transaksi yang Kategori ASLI-nya
+    # (bukan Keterangan) masih literal kategori LAMA (sebelum di-rename/
+    # digabung sesuai kontrak kategori v3) dan tidak ketangkap aturan
+    # spesifik manapun di atas - default ke kategori BARU sesuai
+    # penegasan user, bukan dibiarkan jatuh ke Kategori Baru cuma
+    # karena tidak ada kata kunci lain yang cocok. Ditaruh PALING
+    # TERAKHIR (kalah prioritas dari SEMUA aturan kata kunci spesifik
+    # di atas).
+    {"kategori_asli": "belanja operasional", "category": "Overhead", "sheet_contains": None},
+    {"kategori_asli": "belanja konsumsi", "category": "Konsumsi dan Liburan", "sheet_contains": None},
+    {"kategori_asli": "reparasi dan maintenance", "category": "Reparasi dan Maintenance Tools dan Mesin", "sheet_contains": None},
+    {"kategori_asli": "pajak daerah", "category": "Pajak dan Administrasi", "sheet_contains": None},
+    {"kategori_asli": "biaya renovasi atap", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
 # kalau ada; kalau file/kunci tidak ada, pakai daftar default di atas.
@@ -204,7 +217,7 @@ def _build_transfer_masuk_rules():
                        "category": "Modal & Setoran Pemilik", "sheet_contains": None})
     if employee_keywords:
         rules.append({"all": ["transfer masuk"], "any": employee_keywords,
-                       "category": "Belanja Operasional", "sheet_contains": None})
+                       "category": "Overhead", "sheet_contains": None})
     rules.append({"all": ["transfer masuk"], "none_of": owner_keywords + employee_keywords,
                   "amount_max": 300000, "category": "Penjualan", "sheet_contains": None})
     # Fallback KHUSUS untuk "transfer masuk" yang TIDAK match salah satu
@@ -225,6 +238,16 @@ _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_categor
     "modal & setoran pemilik", "modal dan setoran pemilik", "laba ditahan bulanan",
     "saldo awal", "saldo awal bulan", "modal", "pengeluaran pribadi",
     "hutang masuk", "pembayaran hutang",
+    # Kategori Layer 1 SPESIFIK dari bot konversi (kontrak v3) - kalau
+    # Kategori ASLI SUDAH salah satu dari ini, PERCAYAI apa adanya,
+    # JANGAN dicoba ditimpa aturan kata kunci generik lain. Tanpa ini,
+    # kategori seperti "Sewa dan Maintenance Bangunan" bisa keliru
+    # ketimpa aturan "sewa"->Overhead yang lebih umum, cuma karena kata
+    # "sewa" ikut muncul di teks gabungan (termasuk Kategori aslinya
+    # sendiri) tanpa ada kata kunci bangunan spesifik lain di Keterangan.
+    "belanja bahan", "overhead", "konsumsi dan liburan", "belanja utilitas",
+    "tools dan equipments", "kemasan", "subscription", "sewa dan maintenance bangunan",
+    "reparasi dan maintenance tools dan mesin", "pajak dan administrasi", "belanja assets",
 ]))
 
 
@@ -1682,18 +1705,15 @@ INCOME_CATEGORIES_REVENUE = ["Penjualan", "Penjualan Shopeefood"]
 # sini, itu murni hasil roll-up di bagian "RINGKASAN LAYER 2" Laba Rugi.
 INCOME_CATEGORIES_EXPENSE = [
     "Belanja Bahan",
-    "Belanja Operasional",
     "Overhead",
-    "Belanja Konsumsi",
     "Konsumsi dan Liburan",
     "Belanja Utilitas",
     "Tools dan Equipments",
     "Kemasan",
     "Subscription",
-    "Sewa dan Mantenantce Bangunan",
-    "Reparasi dan Maintenance",
-    "Pajak Daerah",
-    "Biaya Renovasi Atap",
+    "Sewa dan Maintenance Bangunan",
+    "Reparasi dan Maintenance Tools dan Mesin",
+    "Pajak dan Administrasi",
     "Belanja Assets",
 ]
 
@@ -2015,33 +2035,37 @@ def write_income_statement(wb, sheets_last_row, period_label, period_month, reco
     # RINGKASAN LAYER 2 (COGS/OpEx/CapEx) - roll-up dari kategori Layer 1
     # di atas, sesuai "Kontrak Kategori: Bot Konversi -> Bot Rekonsiliasi"
     # yang disepakati dengan tim bot konversi:
-    #   COGS  = Belanja Bahan + Belanja Konsumsi
-    #   OpEx  = Belanja Operasional + Overhead + OpEx(kategori umum) +
-    #           Reparasi dan Maintenance + Marketing & RnD + Gaji* + Biaya
-    #           Admin Bank
+    #   COGS  = Belanja Bahan (Belanja Konsumsi sudah digabung ke
+    #           Konsumsi dan Liburan yang sekarang OpEx, bukan COGS lagi)
+    #   OpEx  = Overhead (sudah menyerap Belanja Operasional) +
+    #           Konsumsi dan Liburan + Belanja Utilitas + Tools dan
+    #           Equipments + Kemasan + Subscription + Sewa dan
+    #           Maintenance Bangunan (sudah menyerap Biaya Renovasi Atap)
+    #           + Reparasi dan Maintenance Tools dan Mesin + Pajak dan
+    #           Administrasi + Marketing & RnD + Gaji* + Biaya Admin Bank
     #   CapEx = Belanja Assets
     # Baris Layer 1 di atas TETAP ditampilkan lengkap untuk audit detail -
     # ini cuma ringkasan tambahan, bukan pengganti.
     write_pivot_section(ws, r, "RINGKASAN LAYER 2 (roll-up COGS/OpEx/CapEx)", sheets)
     r += 1
-    cogs_ref_rows = [exp_row_by_cat["Belanja Bahan"], exp_row_by_cat["Belanja Konsumsi"]]
+    cogs_ref_rows = [exp_row_by_cat["Belanja Bahan"]]
     write_pivot_formula_row(
-        ws, r, "COGS (Belanja Bahan + Belanja Konsumsi)", sheets,
+        ws, r, "COGS (Belanja Bahan)", sheets,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in cogs_ref_rows),
         bold=True,
     )
     r += 1
     opex_ref_rows = [
-        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"],
+        exp_row_by_cat["Overhead"],
         exp_row_by_cat["Konsumsi dan Liburan"], exp_row_by_cat["Belanja Utilitas"],
         exp_row_by_cat["Tools dan Equipments"], exp_row_by_cat["Kemasan"],
-        exp_row_by_cat["Subscription"], exp_row_by_cat["Sewa dan Mantenantce Bangunan"],
-        exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
-        exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row,
+        exp_row_by_cat["Subscription"], exp_row_by_cat["Sewa dan Maintenance Bangunan"],
+        exp_row_by_cat["Reparasi dan Maintenance Tools dan Mesin"], exp_row_by_cat["Pajak dan Administrasi"],
+        marketing_rnd_row,
         gaji_ini_row, gaji_accrual_row, gaji_lainnya_row, fee_row,
     ]
     write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+Konsumsi&Liburan+Utilitas+Tools&Equip+Kemasan+Subscription+Sewa&Maintenance Bangunan+Reparasi+Pajak Daerah+Renovasi Atap+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
+        ws, r, "OpEx (Overhead+Konsumsi&Liburan+Utilitas+Tools&Equip+Kemasan+Subscription+Sewa&Maintenance Bangunan+Reparasi&Maintenance Tools&Mesin+Pajak&Administrasi+Marketing&RnD+Gaji*+Biaya Admin Bank)", sheets,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
     )
