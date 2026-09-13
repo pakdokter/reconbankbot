@@ -47,7 +47,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import Conflict, NetworkError
 
-from reconcile import run_reconciliation
+from reconcile import run_reconciliation, run_rekon_lokal
 import reconcile as rc
 from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report, check_continuity_between_months
 from kasir_audit import run_kasir_audit, parse_pos_sales, KasirAuditError, _looks_like_account_sheet, looks_like_interpretasi_file
@@ -159,6 +159,7 @@ Upload file .xlsx — proses rekonsiliasi bulanan langsung (tanpa command). Lapo
 
 *Audit tambahan*
 /kontinuitas — bandingkan Saldo Akhir file bulan lalu dengan Saldo Awal file bulan ini (deteksi selisih di batas antar bulan). Upload 2 file berurutan setelah command ini.
+/rekonlokal — cocokkan HANYA transaksi Transaksi Internal antar 2 file rekening (bukan rekonsiliasi penuh). Output 2 file dengan Subjek/Objek transfer yang matched dikoreksi, selebihnya apa adanya.
 /auditkasir — audit silang mesin kasir (POS) vs rekap keuangan, termasuk asumsi settlement QRIS/kartu H+1 (atau tanggal settle eksplisit kalau pakai file Interpretasi Penjualan). Upload file penjualan (Detail Penjualan POS atau Interpretasi Penjualan) + Rekap (urutan bebas, jenis dideteksi otomatis), lalu /selesai.
 
 *Kelola kategori & alias pegawai (butuh Postgres tersambung)*
@@ -269,6 +270,56 @@ async def _process_and_reply(update, input_path, with_statements):
                 filename=final_filename,
                 caption=build_caption(summary),
             )
+
+
+async def rekonlokal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fitur MANUAL ringan - cocokkan HANYA transaksi Transaksi Internal
+    antar 2 file rekening (bukan rekonsiliasi penuh). Output: 2 file yang
+    sama, Subjek/Objek transfer yang matched dikoreksi, selebihnya apa
+    adanya. Caption balasan SENGAJA cuma 'Transfer cocok: X high, Y
+    medium.' - tidak ada penjelasan lain (permintaan eksplisit user)."""
+    context.user_data["rekonlokal_mode"] = True
+    context.user_data["rekonlokal_files"] = []
+    await update.message.reply_text(
+        "Mode Rekon Lokal aktif. Upload 2 file rekening (format standar 9 kolom) secara berurutan.\n\n"
+        "Kirim /batal kalau mau keluar dari mode ini."
+    )
+
+
+async def handle_rekonlokal_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    files = context.user_data.setdefault("rekonlokal_files", [])
+    user_id = update.effective_user.id
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"rekonlokal_{user_id}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    dest = os.path.join(tmp_dir, f"file_{len(files) + 1}.xlsx")
+    tg_file = await doc.get_file()
+    await tg_file.download_to_drive(dest)
+    files.append((dest, doc.file_name))
+
+    if len(files) < 2:
+        await update.message.reply_text(f"File {len(files)}/2 diterima. Upload 1 file lagi.")
+        return
+
+    status_msg = await update.message.reply_text("Mencocokkan transfer, tunggu sebentar...")
+    out1 = os.path.join(tmp_dir, f"Rekon_Lokal_{files[0][1]}")
+    out2 = os.path.join(tmp_dir, f"Rekon_Lokal_{files[1][1]}")
+    try:
+        result = run_rekon_lokal(files[0][0], files[1][0], out1, out2)
+    except Exception as e:
+        logger.exception("Gagal menjalankan rekon lokal")
+        await status_msg.edit_text(f"Gagal: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        context.user_data["rekonlokal_mode"] = False
+        context.user_data["rekonlokal_files"] = []
+        return
+    context.user_data["rekonlokal_mode"] = False
+    context.user_data["rekonlokal_files"] = []
+    caption = f"Transfer cocok: {result['n_high']} high, {result['n_medium']} medium."
+    await status_msg.delete()
+    with open(out1, "rb") as f1, open(out2, "rb") as f2:
+        await update.message.reply_document(document=f1, filename=os.path.basename(out1))
+        await update.message.reply_document(document=f2, filename=os.path.basename(out2), caption=caption)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def kontinuitas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -465,6 +516,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_auditkasir_document(update, context, doc)
         return
 
+    if context.user_data.get("rekonlokal_mode"):
+        await handle_rekonlokal_document(update, context, doc)
+        return
+
     if context.user_data.get("kontinuitas_mode"):
         await handle_kontinuitas_document(update, context, doc)
         return
@@ -540,6 +595,11 @@ async def tahunan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("rekonlokal_mode"):
+        context.user_data["rekonlokal_mode"] = False
+        context.user_data["rekonlokal_files"] = []
+        await update.message.reply_text("Mode Rekon Lokal dibatalkan.")
+        return
     if context.user_data.get("auditkasir_mode"):
         context.user_data["auditkasir_mode"] = False
         context.user_data["auditkasir_pos_files"] = []
@@ -883,6 +943,7 @@ def main():
     app.add_handler(CommandHandler("lihatalias", lihatalias_command))
     app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
     app.add_handler(CommandHandler("kontinuitas", kontinuitas_command))
+    app.add_handler(CommandHandler("rekonlokal", rekonlokal_command))
     app.add_handler(CommandHandler("auditkasir", auditkasir_command))
     app.add_handler(CommandHandler("cmd", cmd_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
