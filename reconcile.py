@@ -167,7 +167,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
              "listrik", "pln"],
      "category": "Belanja Utilitas", "sheet_contains": None},
     {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
-    {"any": ["belanja tools","cutleries", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["belanja tools", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
@@ -1685,17 +1685,47 @@ def _bank_group_fill(sheet_title):
     return None
 
 
+def _infer_account_name(txns):
+    """Tebak nama/kode rekening dari data transaksinya sendiri - ambil
+    nilai Subjek/Objek (gabungan) yang PALING SERING muncul, kecuali
+    placeholder ('-') dan nama sheet generik ('Mutasi') yang tidak
+    merepresentasikan rekening apapun. Dipakai untuk file 'Rekon Lokal'
+    berdiri sendiri yang sheet-nya sering dinamai generik ('Mutasi') di
+    KEDUA file - nama sheet TIDAK BISA dipakai sebagai identitas
+    rekening (selain tidak informatif, kalau kedua file kebetulan
+    sheet-nya sama persis, itu bikin identitas keduanya tertukar total
+    di sisi pencocokan/penulisan hasil).
+
+    Return None kalau tidak ada kandidat jelas (fallback ke nama sheet
+    apa adanya oleh pemanggil)."""
+    counts = {}
+    for t in txns:
+        for v in (t.subjek, t.objek):
+            v = (v or "").strip()
+            if v and v.lower() not in ("-", "mutasi"):
+                counts[v] = counts.get(v, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
 def run_rekon_lokal(path1, path2, out1, out2):
     """Rekon Lokal - fitur MANUAL ringan: cocokkan HANYA transaksi
     'Transaksi Internal' antar 2 file rekening (bukan rekonsiliasi penuh
     - tidak ada Laba Rugi/Neraca/deteksi minus/dst). Untuk transfer yang
     match confidence High/Medium (nominal sama di tanggal sama, atau
-    selisih wajar untuk settlement bank - lihat find_matches), Subjek/
-    Objek di KEDUA file dikoreksi supaya saling menyebut rekening lawan
-    yang benar. Selain koreksi itu, KEDUA FILE DIKEMBALIKAN APA ADANYA -
-    tidak ada highlight warna, tidak ada sheet tambahan, tidak ada
-    kategorisasi/perhitungan lain. Split/merge (combo_matches) SENGAJA
-    di luar cakupan - fitur ini murni pasangan 1:1 sederhana.
+    selisih wajar untuk settlement bank - lihat find_matches):
+    1. Subjek/Objek di KEDUA file dikoreksi supaya saling menyebut
+       rekening lawan yang benar - nama rekening diambil dari
+       _infer_account_name (BUKAN nama sheet - lihat catatan di sana),
+       supaya benar walau sheet kedua file kebetulan sama persis
+       ('Mutasi').
+    2. Highlight warna berdasarkan grup bank TUJUAN, SAMA seperti flow
+       rekonsiliasi utama (biru=BCA, orange=Jago, kuning=BRI).
+    Selain koreksi & highlight itu, KEDUA FILE DIKEMBALIKAN APA ADANYA -
+    tidak ada sheet tambahan, tidak ada kategorisasi/perhitungan lain.
+    Split/merge (combo_matches) SENGAJA di luar cakupan - fitur ini
+    murni pasangan 1:1 sederhana.
 
     Return dict {"n_high": ..., "n_medium": ...} untuk caption bot -
     TIDAK ADA informasi lain yang perlu ditampilkan ke user."""
@@ -1709,22 +1739,22 @@ def run_rekon_lokal(path1, path2, out1, out2):
         raise ValueError(f"File '{path2}' tidak punya sheet rekening berformat standar yang dikenali.")
 
     all_txns = []
-    sheet_to_wb = {}
-    for sn in sheets1:
-        split_fliptech_combined_rows(wb1[sn])
-        txns, _ = read_account_sheet(wb1[sn])
-        all_txns.extend(txns)
-        sheet_to_wb[sn] = wb1
-    for sn in sheets2:
-        split_fliptech_combined_rows(wb2[sn])
-        txns, _ = read_account_sheet(wb2[sn])
-        all_txns.extend(txns)
-        sheet_to_wb[sn] = wb2
+    # key = nama rekening HASIL TEBAKAN (unik per file, dipakai sebagai
+    # t.sheet pengganti supaya find_matches tidak pernah menganggap 2
+    # sheet dari file BEDA sebagai "sheet yang sama" cuma karena judul
+    # sheet aslinya kebetulan identik ('Mutasi' di kedua file)
+    name_to_real = {}  # nama rekening -> (workbook, nama sheet ASLI)
+    for wb, sheets, tag in ((wb1, sheets1, "1"), (wb2, sheets2, "2")):
+        for sn in sheets:
+            split_fliptech_combined_rows(wb[sn])
+            txns, _ = read_account_sheet(wb[sn])
+            akun = _infer_account_name(txns) or f"{sn} ({tag})"
+            for t in txns:
+                t.sheet = akun
+            all_txns.extend(txns)
+            name_to_real[akun] = (wb, sn)
 
-    matches, _combo_matches = find_matches(all_txns, sheets1 + sheets2)
-
-    def _base_name(sheet_title):
-        return sheet_title.rsplit(" ", 2)[0]
+    matches, _combo_matches = find_matches(all_txns, list(name_to_real.keys()))
 
     n_high = 0
     n_medium = 0
@@ -1736,11 +1766,19 @@ def run_rekon_lokal(path1, path2, out1, out2):
         else:
             n_medium += 1
         pengirim, penerima = _sender_receiver(m.src, m.dst)
-        sheet_to_wb[pengirim.sheet][pengirim.sheet].cell(row=pengirim.row, column=8, value=_base_name(penerima.sheet))
-        sheet_to_wb[penerima.sheet][penerima.sheet].cell(row=penerima.row, column=7, value=_base_name(pengirim.sheet))
+        wb_p, sheet_p = name_to_real[pengirim.sheet]
+        wb_r, sheet_r = name_to_real[penerima.sheet]
+        wb_p[sheet_p].cell(row=pengirim.row, column=8, value=penerima.sheet)
+        wb_r[sheet_r].cell(row=penerima.row, column=7, value=pengirim.sheet)
+        fill = _bank_group_fill(penerima.sheet)
+        if fill is not None:
+            for c in range(1, 10):
+                wb_p[sheet_p].cell(row=pengirim.row, column=c).fill = fill
+                wb_r[sheet_r].cell(row=penerima.row, column=c).fill = fill
 
     wb1.save(out1)
     wb2.save(out2)
+    return {"n_high": n_high, "n_medium": n_medium}
     return {"n_high": n_high, "n_medium": n_medium}
 
 
