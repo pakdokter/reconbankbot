@@ -301,8 +301,10 @@ async def handle_rekonlokal_document(update: Update, context: ContextTypes.DEFAU
         return
 
     status_msg = await update.message.reply_text("Mencocokkan transfer, tunggu sebentar...")
-    out1 = os.path.join(tmp_dir, f"Rekon_Lokal_{files[0][1]}")
-    out2 = os.path.join(tmp_dir, f"Rekon_Lokal_{files[1][1]}")
+    out_dir = os.path.join(tmp_dir, "out")
+    os.makedirs(out_dir, exist_ok=True)
+    out1 = os.path.join(out_dir, files[0][1])
+    out2 = os.path.join(out_dir, files[1][1])
     try:
         result = run_rekon_lokal(files[0][0], files[1][0], out1, out2)
     except Exception as e:
