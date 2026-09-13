@@ -167,7 +167,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
              "listrik", "pln"],
      "category": "Belanja Utilitas", "sheet_contains": None},
     {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
-    {"any": ["belanja tools","cutleries" "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["belanja tools","cutleries", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
@@ -1643,6 +1643,27 @@ def add_effective_category_column(ws, txns):
     ws.column_dimensions[get_column_letter(13)].width = 34
 
 
+def _sender_receiver(t1, t2):
+    """Tentukan mana PENGIRIM (nominal negatif/debit - uang keluar dari
+    rekening ini) dan mana PENERIMA (nominal positif/kredit - uang
+    masuk ke rekening ini) dari sepasang transaksi transfer yang sudah
+    matched. PENTING: find_matches() TIDAK menjamin src=pengirim/
+    dst=penerima - src/dst di sana cuma menandai "transaksi mana yang
+    mulai dicari" vs "pasangannya yang ditemukan", BISA JADI src adalah
+    sisi kredit (penerima) kalau itu yang lebih dulu diproses. Salah
+    asumsi arah di sini akan menulis Subjek/Objek TERBALIK.
+
+    Kalau tanda SAMA (same_sign - kasus tak lazim, mis. kedua sisi sama-
+    sama tercatat kredit karena pembukuan ganda yang tidak standar),
+    tidak ada dasar objektif untuk menentukan arah - kembalikan urutan
+    asli (t1, t2) sebagai fallback, tidak dianggap error."""
+    if t1.nominal < 0 and t2.nominal > 0:
+        return t1, t2
+    if t2.nominal < 0 and t1.nominal > 0:
+        return t2, t1
+    return t1, t2
+
+
 BCA_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")  # biru
 JAGO_MATCH_FILL = PatternFill("solid", fgColor="FCD9B6")  # orange
 BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
@@ -1714,9 +1735,9 @@ def run_rekon_lokal(path1, path2, out1, out2):
             n_high += 1
         else:
             n_medium += 1
-        src, dst = m.src, m.dst
-        sheet_to_wb[src.sheet][src.sheet].cell(row=src.row, column=8, value=_base_name(dst.sheet))
-        sheet_to_wb[dst.sheet][dst.sheet].cell(row=dst.row, column=7, value=_base_name(src.sheet))
+        pengirim, penerima = _sender_receiver(m.src, m.dst)
+        sheet_to_wb[pengirim.sheet][pengirim.sheet].cell(row=pengirim.row, column=8, value=_base_name(penerima.sheet))
+        sheet_to_wb[penerima.sheet][penerima.sheet].cell(row=penerima.row, column=7, value=_base_name(pengirim.sheet))
 
     wb1.save(out1)
     wb2.save(out2)
@@ -1740,34 +1761,33 @@ def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
     def _base_name(sheet_title):
         return sheet_title.rsplit(" ", 2)[0]
 
-    def _apply(src, dst):
-        if src is None or dst is None:
+    def _apply(t1, t2):
+        if t1 is None or t2 is None:
             return
-        if src.sheet not in wb.sheetnames or dst.sheet not in wb.sheetnames:
+        if t1.sheet not in wb.sheetnames or t2.sheet not in wb.sheetnames:
             return
-        ws_src = wb[src.sheet]
-        ws_dst = wb[dst.sheet]
-        ws_src.cell(row=src.row, column=8, value=_base_name(dst.sheet))  # Objek asal = tujuan
-        ws_dst.cell(row=dst.row, column=7, value=_base_name(src.sheet))  # Subjek tujuan = asal
-        fill = _bank_group_fill(dst.sheet)
+        pengirim, penerima = _sender_receiver(t1, t2)
+        ws_pengirim = wb[pengirim.sheet]
+        ws_penerima = wb[penerima.sheet]
+        ws_pengirim.cell(row=pengirim.row, column=8, value=_base_name(penerima.sheet))  # Objek pengirim = penerima
+        ws_penerima.cell(row=penerima.row, column=7, value=_base_name(pengirim.sheet))  # Subjek penerima = pengirim
+        fill = _bank_group_fill(penerima.sheet)
         if fill is not None:
             for c in range(1, 10):
-                ws_src.cell(row=src.row, column=c).fill = fill
-                ws_dst.cell(row=dst.row, column=c).fill = fill
+                ws_pengirim.cell(row=pengirim.row, column=c).fill = fill
+                ws_penerima.cell(row=penerima.row, column=c).fill = fill
 
     for m in matches:
         if m.dst is not None and m.confidence in ("High", "Medium", "Low"):
             _apply(m.src, m.dst)
     for combo in combo_matches:
         # split/merge: src (satu sisi) vs 2 parts (sisi lain, di rekening
-        # yang SAMA) - src dianggap "tujuan" kalau nominalnya positif
-        # (uang masuk), kalau tidak src adalah "asal"
+        # yang sama) - arah pengirim/penerima ditentukan otomatis di
+        # dalam _apply() lewat tanda nominal, urutan argumen di sini
+        # tidak lagi krusial.
         src = combo["src"]
         for part in combo["parts"]:
-            if src.nominal > 0:
-                _apply(part, src)
-            else:
-                _apply(src, part)
+            _apply(src, part)
 
 
 # ---------------------------------------------------------------------------
