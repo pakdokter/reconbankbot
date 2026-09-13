@@ -148,6 +148,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["pemindahbukuan", "transfer internal"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["tarik tunai"], "category": "Penjualan", "sheet_contains": "kas"},
+    {"any": ["visionet"], "category": "Penjualan", "sheet_contains": None},
     # Sewa dan Mantenantce Bangunan (nama kategori SENGAJA ejaan ini,
     # sesuai kontrak kategori v3 dari bot konversi) - dicek SEBELUM aturan
     # Belanja Utilitas/Overhead yang lebih generik, karena kata kunci di
