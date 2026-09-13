@@ -1017,25 +1017,25 @@ def write_quarterly_income_statement(wb, months, assets, period_word="Kuartal"):
     # aset) dimasukkan ke OpEx, mengikuti praktik P&L sederhana UMKM.
     rc.write_pivot_section(ws, r, "RINGKASAN LAYER 2 (roll-up COGS/OpEx)", labels)
     r += 1
-    cogs_ref_rows = [exp_row_by_cat["Belanja Bahan"], exp_row_by_cat["Belanja Konsumsi"]]
+    cogs_ref_rows = [exp_row_by_cat["Belanja Bahan"]]
     rc.write_pivot_formula_row(
-        ws, r, "COGS (Belanja Bahan + Belanja Konsumsi)", labels,
+        ws, r, "COGS (Belanja Bahan)", labels,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in cogs_ref_rows),
         bold=True,
     )
     r += 1
     opex_ref_rows = [
-        exp_row_by_cat["Belanja Operasional"], exp_row_by_cat["Overhead"],
+        exp_row_by_cat["Overhead"],
         exp_row_by_cat["Konsumsi dan Liburan"], exp_row_by_cat["Belanja Utilitas"],
         exp_row_by_cat["Tools dan Equipments"], exp_row_by_cat["Kemasan"],
-        exp_row_by_cat["Subscription"], exp_row_by_cat["Sewa dan Mantenantce Bangunan"],
-        exp_row_by_cat["Reparasi dan Maintenance"], exp_row_by_cat["Pajak Daerah"],
-        exp_row_by_cat["Biaya Renovasi Atap"], marketing_rnd_row, gaji_row, fee_row,
+        exp_row_by_cat["Subscription"], exp_row_by_cat["Sewa dan Maintenance Bangunan"],
+        exp_row_by_cat["Reparasi dan Maintenance Tools dan Mesin"], exp_row_by_cat["Pajak dan Administrasi"],
+        marketing_rnd_row, gaji_row, fee_row,
     ]
     if depresiasi_row:
         opex_ref_rows.append(depresiasi_row)
     rc.write_pivot_formula_row(
-        ws, r, "OpEx (Belanja Operasional+Overhead+Konsumsi&Liburan+Utilitas+Tools&Equip+Kemasan+Subscription+Sewa&Maintenance Bangunan+Reparasi+Marketing&RnD+Gaji+Biaya Admin Bank"
+        ws, r, "OpEx (Overhead+Konsumsi&Liburan+Utilitas+Tools&Equip+Kemasan+Subscription+Sewa&Maintenance Bangunan+Reparasi&Maintenance Tools&Mesin+Pajak&Administrasi+Marketing&RnD+Gaji+Biaya Admin Bank"
                + ("+Penyusutan" if depresiasi_row else "") + ")", labels,
         lambda cl: "=" + "+".join(f"{cl}{rr}" for rr in opex_ref_rows),
         bold=True,
@@ -1664,9 +1664,11 @@ def resolve_employee_for_gaji(t):
 
 # Kategori "ambigu" yang kadang dipakai secara keliru untuk pembayaran
 # gaji sungguhan (mis. bonus/tambahan gaji ke banyak pegawai tanggal
-# sama & referensi sama, tapi tertulis "Belanja Operasional" di
-# sumbernya, bukan "Gaji Pegawai").
-_AMBIGUOUS_GAJI_CATEGORIES = {"belanja operasional", "transfer keluar"}
+# sama & referensi sama, tapi tertulis "Overhead"/"Belanja Operasional"
+# di sumbernya, bukan "Gaji Pegawai"). "belanja operasional" dipertahankan
+# di sini untuk kompatibilitas file lama - kategori itu sendiri sudah
+# digabung ke "Overhead" untuk data baru.
+_AMBIGUOUS_GAJI_CATEGORIES = {"belanja operasional", "overhead", "transfer keluar"}
 
 
 def _find_batch_payroll_ids(all_txns):
