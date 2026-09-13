@@ -838,6 +838,7 @@ def find_matches(all_txns, sheet_names):
             and t.is_transfer
             and t.nominal != 0
             and id(t) not in consumed_ids
+            and t.sheet != src.sheet  # TIDAK PERNAH sheet yang sama - lihat catatan bug di bawah
             and (counterpart_hint is None or t.sheet == counterpart_hint)
             and (
                 (t.nominal > 0) != (src.nominal > 0)  # tanda berlawanan (normal)
@@ -847,6 +848,16 @@ def find_matches(all_txns, sheet_names):
                 # konsisten memakai tanda negatif untuk uang keluar
             )
         ]
+        # BUG SERIUS yang diperbaiki: sebelum ada baris "t.sheet !=
+        # src.sheet" di atas, filter "(counterpart_hint is None or
+        # t.sheet == counterpart_hint)" jadi SELALU True (vacuous)
+        # begitu counterpart_hint None - artinya TIDAK ADA filter
+        # rekening SAMA SEKALI, termasuk membolehkan transaksi dari
+        # SHEET YANG SAMA (rekening sendiri) match dengan dirinya
+        # sendiri kalau kebetulan tanggal+nominal berlawanan cocok.
+        # Ditemukan dari laporan user: 2 baris di SATU rekening yang
+        # sama (kredit +1.200.000 & debit -1.200.000 tanggal sama)
+        # saling matched, padahal jelas harus rekening BERBEDA.
         if not candidates and counterpart_hint is None:
             # tidak ada petunjuk rekening tujuan -> perluas ke semua sheet lain
             candidates = [
@@ -1917,13 +1928,28 @@ def run_rekon_lokal(path1, path2, out1, out2):
             continue
         src = m.src
         if (src.subjek or "").strip() == (src.objek or "").strip():
-            continue
-        # Sudah pernah "Solved <X> to <Y>" dari run /rekonlokal
-        # SEBELUMNYA (dengan file pasangan yang berbeda) - baris ini
-        # SUDAH selesai direkon, cuma kebetulan rekening lawannya tidak
-        # ada di file yang dibandingkan pada run kali ini. Bukan
-        # genuinely belum direkon - jangan dihighlight merah lagi.
-        if (src.ket or "").strip().lower().startswith("solved "):
+            # Self-referencing (Subjek==Objek) BIASANYA pola setoran
+            # tunai yang wajar (lihat komentar di bawah) - TAPI kalau
+            # Keterangan Tambahan-nya sudah "Solved <X> to <X>" (rekening
+            # SAMA di kedua sisi), ini bukan setoran tunai genuine -
+            # ini SISA DATA RUSAK dari bug find_matches yang sudah
+            # diperbaiki (transaksi sempat salah matched dengan transaksi
+            # LAIN DI REKENING YANG SAMA, ditandai 'Solved' padahal
+            # rekening lawannya harusnya BEDA). Highlight merah supaya
+            # user sadar perlu ditelusuri manual - jangan dianggap wajar.
+            ket = (src.ket or "").strip().lower()
+            subjek = (src.subjek or "").strip().lower()
+            if ket.startswith("solved ") and subjek and subjek in ket.split(" to "):
+                pass  # lanjut ke bawah, JANGAN di-skip - tandai merah
+            else:
+                continue
+        elif (src.ket or "").strip().lower().startswith("solved "):
+            # Sudah pernah "Solved <X> to <Y>" (X != Y, valid) dari run
+            # /rekonlokal SEBELUMNYA (dengan file pasangan yang berbeda)
+            # - baris ini SUDAH selesai direkon, cuma kebetulan rekening
+            # lawannya tidak ada di file yang dibandingkan pada run kali
+            # ini. Bukan genuinely belum direkon - jangan dihighlight
+            # merah lagi.
             continue
         n_belum_rekon += 1
         wb_t, sheet_t = name_to_real[src.sheet]
