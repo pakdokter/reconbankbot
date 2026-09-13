@@ -1682,6 +1682,7 @@ def _sender_receiver(t1, t2):
 BCA_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")  # biru
 JAGO_MATCH_FILL = PatternFill("solid", fgColor="FCD9B6")  # orange
 BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
+REKONLOKAL_UNMATCHED_FILL = PatternFill("solid", fgColor="FFC7CE")  # merah
 
 
 def _bank_group_fill(sheet_title):
@@ -1820,13 +1821,17 @@ def run_rekon_lokal(path1, path2, out1, out2):
        rekening sendiri, TIDAK ketemu pasangan cross-file - uang tunai
        masuk langsung tanpa lawan transaksi bank) - Keterangan
        diseragamkan jadi "Setoran <rekening>".
+    4. Transaksi internal yang TIDAK ketemu pasangannya (selain pola
+       setoran tunai di atas, yang memang wajar tidak match) dihighlight
+       MERAH - supaya kelihatan jelas mana yang masih perlu ditelusuri
+       manual.
     Selain koreksi & highlight itu, KEDUA FILE DIKEMBALIKAN APA ADANYA -
     tidak ada sheet tambahan, tidak ada kategorisasi/perhitungan lain.
     Split/merge (combo_matches) SENGAJA di luar cakupan - fitur ini
     murni pasangan 1:1 sederhana.
 
-    Return dict {"n_high": ..., "n_medium": ...} untuk caption bot -
-    TIDAK ADA informasi lain yang perlu ditampilkan ke user."""
+    Return dict {"n_high": ..., "n_medium": ..., "n_belum_rekon": ...}
+    untuk caption bot."""
     wb1 = openpyxl.load_workbook(path1)
     wb2 = openpyxl.load_workbook(path2)
     sheets1 = [s for s in wb1.sheetnames if _looks_like_account_sheet(wb1[s])]
@@ -1890,6 +1895,27 @@ def run_rekon_lokal(path1, path2, out1, out2):
             for c in range(1, 10):
                 ws_p.cell(row=pengirim.row, column=c).fill = fill
                 ws_r.cell(row=penerima.row, column=c).fill = fill
+
+    # Transaksi internal yang TIDAK ketemu pasangannya - dihighlight
+    # MERAH supaya kelihatan jelas mana yang masih perlu ditelusuri
+    # manual. Transaksi self-referencing (Subjek==Objek==rekening
+    # sendiri, pola setoran tunai via CDM/ATM) DIKECUALIKAN dari sini -
+    # itu MEMANG tidak akan pernah ketemu pasangan lintas file (bukan
+    # transfer antar rekening, cuma uang tunai masuk langsung), sudah
+    # ditangani wajar lewat normalisasi "Setoran <rekening>" di bawah,
+    # bukan kasus 'belum direkon' yang perlu ditandai.
+    n_belum_rekon = 0
+    for m in matches:
+        if m.dst is not None:
+            continue
+        src = m.src
+        if (src.subjek or "").strip() == (src.objek or "").strip():
+            continue
+        n_belum_rekon += 1
+        wb_t, sheet_t = name_to_real[src.sheet]
+        ws_t = wb_t[sheet_t]
+        for c in range(1, 10):
+            ws_t.cell(row=src.row, column=c).fill = REKONLOKAL_UNMATCHED_FILL
 
     # Setoran tunai (mis. "SETORAN VIA CDM") - transaksi yang self-
     # referencing (Subjek==Objek==rekening sendiri, uang tunai masuk
@@ -1958,7 +1984,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
 
     wb1.save(out1)
     wb2.save(out2)
-    return {"n_high": n_high, "n_medium": n_medium}
+    return {"n_high": n_high, "n_medium": n_medium, "n_belum_rekon": n_belum_rekon}
 
 
 def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
