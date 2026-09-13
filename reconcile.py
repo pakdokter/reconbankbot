@@ -1815,6 +1815,27 @@ def run_rekon_lokal(path1, path2, out1, out2):
         wb_t, sheet_t = name_to_real[t.sheet]
         wb_t[sheet_t].cell(row=t.row, column=2, value=f"Setoran {t.sheet}")
 
+    # Catatan penjelasan internal reconcile.py sendiri (split_fliptech_
+    # combined_rows menyisipkan "Bagian dari transaksi Fliptech: ..."
+    # sebagai Keterangan baris hasil pemisahan biaya admin/bunga dari
+    # nominal gabungan) BUKAN format Keterangan final yang dikenali
+    # kontrak kategori - itu cuma catatan proses, bukan Keterangan
+    # transaksi sungguhan. Sederhanakan jadi nama Kategori-nya sendiri
+    # (Kategori sudah benar diisi 'Biaya Admin Bank'/'Bunga Bank' oleh
+    # split_fliptech_combined_rows), Keterangan lama diarsipkan ke
+    # Keterangan Tambahan dulu, font dinormalkan supaya konsisten
+    # dengan baris lain (baris sisipan kadang mewarisi format berbeda).
+    for t in all_txns:
+        if "bagian dari transaksi fliptech" not in (t.desc or "").lower():
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        cell_ket_tambahan = ws_t.cell(row=t.row, column=9)
+        cell_ket_tambahan.value = t.desc
+        cell_b = ws_t.cell(row=t.row, column=2)
+        cell_b.value = t.kategori or cell_b.value
+        cell_b.font = Font(name="Calibri", size=11, bold=False, italic=False, color="000000")
+
     wb1.save(out1)
     wb2.save(out2)
     return {"n_high": n_high, "n_medium": n_medium}
