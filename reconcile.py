@@ -167,7 +167,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
              "listrik", "pln"],
      "category": "Belanja Utilitas", "sheet_contains": None},
     {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
-    {"any": ["belanja tools", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["belanja tools", "tools", "cutleries"], "category": "Tools dan Equipments", "sheet_contains": None},
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
@@ -1672,15 +1672,15 @@ BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 def _bank_group_fill(sheet_title):
     """Tentukan warna highlight berdasarkan grup bank tujuan - BCA (semua
     varian: BCA-887/BCA-417/BCA-292(Biz)) = biru, Jago = orange,
-    BRI (BRI-507/BRI-567(Biz)) = kuning. Rekening lain (Kas-Buku, dst)
-    -> None (tidak ada warna khusus, sesuai permintaan user cuma 3
-    kelompok ini)."""
+    BRI (BRI-507/BRI-567(Biz)) DAN BSI (semua varian) = kuning. Rekening
+    lain (Kas-Buku, dst) -> None (tidak ada warna khusus, sesuai
+    permintaan user cuma kelompok-kelompok ini)."""
     n = sheet_title.lower()
     if n.startswith("bca"):
         return BCA_MATCH_FILL
     if n.startswith("jago"):
         return JAGO_MATCH_FILL
-    if n.startswith("bri"):
+    if n.startswith("bri") or n.startswith("bsi"):
         return BRI_MATCH_FILL
     return None
 
@@ -1721,7 +1721,11 @@ def run_rekon_lokal(path1, path2, out1, out2):
        supaya benar walau sheet kedua file kebetulan sama persis
        ('Mutasi').
     2. Highlight warna berdasarkan grup bank TUJUAN, SAMA seperti flow
-       rekonsiliasi utama (biru=BCA, orange=Jago, kuning=BRI).
+       rekonsiliasi utama (biru=BCA, orange=Jago, kuning=BRI/BSI).
+    3. Transaksi 'setoran tunai' yang self-referencing (Subjek==Objek==
+       rekening sendiri, TIDAK ketemu pasangan cross-file - uang tunai
+       masuk langsung tanpa lawan transaksi bank) - Keterangan
+       diseragamkan jadi "Setoran <rekening>".
     Selain koreksi & highlight itu, KEDUA FILE DIKEMBALIKAN APA ADANYA -
     tidak ada sheet tambahan, tidak ada kategorisasi/perhitungan lain.
     Split/merge (combo_matches) SENGAJA di luar cakupan - fitur ini
@@ -1758,6 +1762,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
 
     n_high = 0
     n_medium = 0
+    matched_ids = set()
     for m in matches:
         if m.dst is None or m.confidence not in ("High", "Medium"):
             continue
@@ -1766,6 +1771,8 @@ def run_rekon_lokal(path1, path2, out1, out2):
         else:
             n_medium += 1
         pengirim, penerima = _sender_receiver(m.src, m.dst)
+        matched_ids.add(id(pengirim))
+        matched_ids.add(id(penerima))
         wb_p, sheet_p = name_to_real[pengirim.sheet]
         wb_r, sheet_r = name_to_real[penerima.sheet]
         wb_p[sheet_p].cell(row=pengirim.row, column=8, value=penerima.sheet)
@@ -1776,9 +1783,26 @@ def run_rekon_lokal(path1, path2, out1, out2):
                 wb_p[sheet_p].cell(row=pengirim.row, column=c).fill = fill
                 wb_r[sheet_r].cell(row=penerima.row, column=c).fill = fill
 
+    # Setoran tunai (mis. "SETORAN VIA CDM") - transaksi yang self-
+    # referencing (Subjek==Objek==rekening sendiri, uang tunai masuk
+    # langsung ke rekening tanpa lawan transaksi bank untuk dicocokkan)
+    # DAN tidak ketemu pasangan cross-file (bukan bagian dari matches di
+    # atas) - Keterangan diseragamkan jadi "Setoran <rekening>", supaya
+    # konsisten apapun istilah aslinya ("SETORAN VIA CDM", dst).
+    for t in all_txns:
+        if id(t) in matched_ids:
+            continue
+        if not t.is_transfer or t.nominal <= 0:
+            continue
+        if (t.subjek or "").strip() != (t.objek or "").strip():
+            continue
+        if "setoran" not in (t.desc or "").lower():
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        wb_t[sheet_t].cell(row=t.row, column=2, value=f"Setoran {t.sheet}")
+
     wb1.save(out1)
     wb2.save(out2)
-    return {"n_high": n_high, "n_medium": n_medium}
     return {"n_high": n_high, "n_medium": n_medium}
 
 
