@@ -23,6 +23,7 @@ mungkin direpresentasikan sebagai rumus (contoh: catatan naratif audit).
 """
 
 import re
+import copy
 import shared_rules
 import datetime
 import openpyxl
@@ -596,6 +597,20 @@ def split_fliptech_combined_rows(ws):
                     ws.cell(row=row, column=6, value=None)
 
                     ws.insert_rows(row + 1)
+                    # ws.insert_rows() TIDAK mewarisi format (font/
+                    # number_format) dari baris sekitarnya - openpyxl
+                    # kasih default kosong, beda dari gaya asli file
+                    # (mis. Arial 9 + format tanggal DD/MM/YYYY jadi
+                    # Calibri 11 + yyyy-mm-dd h:mm:ss). Salin dari baris
+                    # asal (row) supaya baris baru konsisten visual
+                    # dengan baris lain, bukan menonjol keliru.
+                    for col in range(1, 10):
+                        src_cell = ws.cell(row=row, column=col)
+                        new_cell = ws.cell(row=row + 1, column=col)
+                        new_cell.font = copy.copy(src_cell.font)
+                        new_cell.number_format = src_cell.number_format
+                        new_cell.alignment = copy.copy(src_cell.alignment)
+                        new_cell.border = copy.copy(src_cell.border)
                     fee_label = "Biaya Admin Bank" if sign < 0 else "Bunga Bank"
                     note = (f"Bagian dari transaksi Fliptech: {fee_label} "
                             "(dipisah otomatis dari nominal gabungan oleh reconcile.py)")
@@ -1862,26 +1877,35 @@ def run_rekon_lokal(path1, path2, out1, out2):
         wb_t, sheet_t = name_to_real[t.sheet]
         wb_t[sheet_t].cell(row=t.row, column=2, value=f"Setoran {t.sheet}")
 
-    # Catatan penjelasan internal reconcile.py sendiri (split_fliptech_
-    # combined_rows menyisipkan "Bagian dari transaksi Fliptech: ..."
-    # sebagai Keterangan baris hasil pemisahan biaya admin/bunga dari
-    # nominal gabungan) BUKAN format Keterangan final yang dikenali
-    # kontrak kategori - itu cuma catatan proses, bukan Keterangan
-    # transaksi sungguhan. Sederhanakan jadi nama Kategori-nya sendiri
-    # (Kategori sudah benar diisi 'Biaya Admin Bank'/'Bunga Bank' oleh
-    # split_fliptech_combined_rows), Keterangan lama diarsipkan ke
-    # Keterangan Tambahan dulu, font dinormalkan supaya konsisten
-    # dengan baris lain (baris sisipan kadang mewarisi format berbeda).
+    # Baris hasil pemisahan Fliptech (split_fliptech_combined_rows) -
+    # dikenali dari CIRI KHASNYA (Kategori persis 'Biaya Admin Bank'/
+    # 'Bunga Bank' DAN Subjek '-', signature yang ditulis fungsi itu),
+    # BUKAN dari teks 'Bagian dari transaksi Fliptech...' - teks itu
+    # bisa SUDAH HILANG kalau file ini pernah diproses /rekonlokal
+    # sebelumnya (kategori/keterangan sudah dibersihkan duluan), tapi
+    # font/number_format-nya BISA SAJA belum sempat ikut dibetulkan
+    # (versi /rekonlokal sebelum ini cuma benerin teks, font di-
+    # hardcode salah). Jadi di sini SELALU dicek & dibetulkan ulang,
+    # idempotent - aman dijalankan berkali-kali di file yang sama.
     for t in all_txns:
-        if "bagian dari transaksi fliptech" not in (t.desc or "").lower():
+        kat = (t.kategori or "").strip().lower()
+        if kat not in ("biaya admin bank", "bunga bank"):
+            continue
+        if (t.subjek or "").strip() != "-":
             continue
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        cell_ket_tambahan = ws_t.cell(row=t.row, column=9)
-        cell_ket_tambahan.value = t.desc
-        cell_b = ws_t.cell(row=t.row, column=2)
-        cell_b.value = t.kategori or cell_b.value
-        cell_b.font = Font(name="Calibri", size=11, bold=False, italic=False, color="000000")
+        if "bagian dari transaksi fliptech" in (t.desc or "").lower():
+            ws_t.cell(row=t.row, column=9, value=t.desc)
+            ws_t.cell(row=t.row, column=2, value=t.kategori)
+        if t.row > 1:
+            for col in range(1, 10):
+                ref_cell = ws_t.cell(row=t.row - 1, column=col)
+                this_cell = ws_t.cell(row=t.row, column=col)
+                this_cell.font = copy.copy(ref_cell.font)
+                this_cell.number_format = ref_cell.number_format
+                this_cell.alignment = copy.copy(ref_cell.alignment)
+                this_cell.border = copy.copy(ref_cell.border)
 
     # Transaksi terindikasi Gaji - Keterangan (B) diseragamkan jadi
     # "Gaji <Nama Depan> <Bulan> <Tahun>" (nama depan dari Objek), dan
