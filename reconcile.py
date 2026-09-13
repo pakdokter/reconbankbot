@@ -167,7 +167,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
              "listrik", "pln"],
      "category": "Belanja Utilitas", "sheet_contains": None},
     {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
-    {"any": ["belanja tools","cutleries", "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["belanja tools","cutleries" "tools"], "category": "Tools dan Equipments", "sheet_contains": None},
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
@@ -628,6 +628,20 @@ def last_data_row(ws):
             # berhenti di sini, jangan ikut dihitung sebagai baris transaksi
         last = row[0].row
     return last
+
+
+_STANDARD_HEADER = ["Tanggal", "Keterangan Transaksi", "Kategori Transaksi", "Debit", "Kredit",
+                     "Saldo Kumulatif", "Subjek Transaksi", "Objek Transaksi"]
+
+
+def _looks_like_account_sheet(ws):
+    """True kalau sheet ini berformat standar 9-kolom (Tanggal/
+    Keterangan/Kategori/Debit/Kredit/Saldo/Subjek/Objek/Ket Tambahan) -
+    dicek dari 8 kolom header pertama. Dipakai untuk fitur yang menerima
+    file rekening BEBAS (bukan file Rekonsiliasi multi-sheet biasa),
+    supaya sheet non-rekening (kalau ada) tidak ikut diproses."""
+    header = [ws.cell(row=1, column=c).value for c in range(1, len(_STANDARD_HEADER) + 1)]
+    return header == _STANDARD_HEADER
 
 
 def resolve_account_sheet(hint, sheet_names):
@@ -1648,6 +1662,65 @@ def _bank_group_fill(sheet_title):
     if n.startswith("bri"):
         return BRI_MATCH_FILL
     return None
+
+
+def run_rekon_lokal(path1, path2, out1, out2):
+    """Rekon Lokal - fitur MANUAL ringan: cocokkan HANYA transaksi
+    'Transaksi Internal' antar 2 file rekening (bukan rekonsiliasi penuh
+    - tidak ada Laba Rugi/Neraca/deteksi minus/dst). Untuk transfer yang
+    match confidence High/Medium (nominal sama di tanggal sama, atau
+    selisih wajar untuk settlement bank - lihat find_matches), Subjek/
+    Objek di KEDUA file dikoreksi supaya saling menyebut rekening lawan
+    yang benar. Selain koreksi itu, KEDUA FILE DIKEMBALIKAN APA ADANYA -
+    tidak ada highlight warna, tidak ada sheet tambahan, tidak ada
+    kategorisasi/perhitungan lain. Split/merge (combo_matches) SENGAJA
+    di luar cakupan - fitur ini murni pasangan 1:1 sederhana.
+
+    Return dict {"n_high": ..., "n_medium": ...} untuk caption bot -
+    TIDAK ADA informasi lain yang perlu ditampilkan ke user."""
+    wb1 = openpyxl.load_workbook(path1)
+    wb2 = openpyxl.load_workbook(path2)
+    sheets1 = [s for s in wb1.sheetnames if _looks_like_account_sheet(wb1[s])]
+    sheets2 = [s for s in wb2.sheetnames if _looks_like_account_sheet(wb2[s])]
+    if not sheets1:
+        raise ValueError(f"File '{path1}' tidak punya sheet rekening berformat standar yang dikenali.")
+    if not sheets2:
+        raise ValueError(f"File '{path2}' tidak punya sheet rekening berformat standar yang dikenali.")
+
+    all_txns = []
+    sheet_to_wb = {}
+    for sn in sheets1:
+        split_fliptech_combined_rows(wb1[sn])
+        txns, _ = read_account_sheet(wb1[sn])
+        all_txns.extend(txns)
+        sheet_to_wb[sn] = wb1
+    for sn in sheets2:
+        split_fliptech_combined_rows(wb2[sn])
+        txns, _ = read_account_sheet(wb2[sn])
+        all_txns.extend(txns)
+        sheet_to_wb[sn] = wb2
+
+    matches, _combo_matches = find_matches(all_txns, sheets1 + sheets2)
+
+    def _base_name(sheet_title):
+        return sheet_title.rsplit(" ", 2)[0]
+
+    n_high = 0
+    n_medium = 0
+    for m in matches:
+        if m.dst is None or m.confidence not in ("High", "Medium"):
+            continue
+        if m.confidence == "High":
+            n_high += 1
+        else:
+            n_medium += 1
+        src, dst = m.src, m.dst
+        sheet_to_wb[src.sheet][src.sheet].cell(row=src.row, column=8, value=_base_name(dst.sheet))
+        sheet_to_wb[dst.sheet][dst.sheet].cell(row=dst.row, column=7, value=_base_name(src.sheet))
+
+    wb1.save(out1)
+    wb2.save(out2)
+    return {"n_high": n_high, "n_medium": n_medium}
 
 
 def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
