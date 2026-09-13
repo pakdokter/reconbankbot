@@ -1775,13 +1775,27 @@ def run_rekon_lokal(path1, path2, out1, out2):
         matched_ids.add(id(penerima))
         wb_p, sheet_p = name_to_real[pengirim.sheet]
         wb_r, sheet_r = name_to_real[penerima.sheet]
-        wb_p[sheet_p].cell(row=pengirim.row, column=8, value=penerima.sheet)
-        wb_r[sheet_r].cell(row=penerima.row, column=7, value=pengirim.sheet)
+        ws_p = wb_p[sheet_p]
+        ws_r = wb_r[sheet_r]
+        ws_p.cell(row=pengirim.row, column=8, value=penerima.sheet)
+        ws_r.cell(row=penerima.row, column=7, value=pengirim.sheet)
+        # Kategori (C) dipastikan benar - transaksi ini SUDAH terbukti
+        # transfer internal matched, terlepas dari kategori asalnya
+        # (mis. 'Transfer Lainnya'/'New Kategori' sebelum ketemu
+        # pasangan). Keterangan (B) diseragamkan jadi 'Transfer ke/dari
+        # <rekening>' - Keterangan LAMA diarsipkan ke Keterangan
+        # Tambahan (I) dulu sebelum ditimpa, supaya tidak hilang.
+        ws_p.cell(row=pengirim.row, column=3, value="Transaksi Internal")
+        ws_r.cell(row=penerima.row, column=3, value="Transaksi Internal")
+        ws_p.cell(row=pengirim.row, column=9, value=ws_p.cell(row=pengirim.row, column=2).value)
+        ws_r.cell(row=penerima.row, column=9, value=ws_r.cell(row=penerima.row, column=2).value)
+        ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {penerima.sheet}")
+        ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {pengirim.sheet}")
         fill = _bank_group_fill(penerima.sheet)
         if fill is not None:
             for c in range(1, 10):
-                wb_p[sheet_p].cell(row=pengirim.row, column=c).fill = fill
-                wb_r[sheet_r].cell(row=penerima.row, column=c).fill = fill
+                ws_p.cell(row=pengirim.row, column=c).fill = fill
+                ws_r.cell(row=penerima.row, column=c).fill = fill
 
     # Setoran tunai (mis. "SETORAN VIA CDM") - transaksi yang self-
     # referencing (Subjek==Objek==rekening sendiri, uang tunai masuk
