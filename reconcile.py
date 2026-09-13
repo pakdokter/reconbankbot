@@ -1771,6 +1771,38 @@ def _infer_account_name(txns):
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
+def _find_style_reference_row(ws, row):
+    """Cari baris TERDEKAT (coba ke atas dulu, baru ke bawah) yang aman
+    dijadikan rujukan gaya (font/format) - BUKAN baris 'Saldo Awal
+    Bulan' (baris ringkasan yang MEMANG sengaja beda gaya, biasanya
+    bold + format General), BUKAN baris hasil split Fliptech lain yang
+    SAMA-SAMA masih perlu dibetulkan (Kategori 'Biaya Admin Bank'/
+    'Bunga Bank' DAN Subjek '-' - kalau beberapa baris begini berurutan,
+    saling menjadikan satu sama lain sebagai rujukan bikin gaya rusak
+    menyebar/muter, tidak pernah ketemu gaya yang genuinely benar), dan
+    bukan baris footer (Kategori kosong, mis. 'Total Debit'/'Saldo
+    Akhir').
+
+    Return nomor baris rujukan, atau None kalau tidak ketemu."""
+    def _aman(candidate):
+        kat = str(ws.cell(row=candidate, column=3).value or "").strip().lower()
+        if not kat or kat == "saldo awal bulan":
+            return False
+        if kat in ("biaya admin bank", "bunga bank"):
+            subjek = str(ws.cell(row=candidate, column=7).value or "").strip()
+            if subjek == "-":
+                return False
+        return True
+
+    for candidate in range(row - 1, 1, -1):
+        if _aman(candidate):
+            return candidate
+    for candidate in range(row + 1, ws.max_row + 1):
+        if _aman(candidate):
+            return candidate
+    return None
+
+
 def run_rekon_lokal(path1, path2, out1, out2):
     """Rekon Lokal - fitur MANUAL ringan: cocokkan HANYA transaksi
     'Transaksi Internal' antar 2 file rekening (bukan rekonsiliasi penuh
@@ -1898,9 +1930,10 @@ def run_rekon_lokal(path1, path2, out1, out2):
         if "bagian dari transaksi fliptech" in (t.desc or "").lower():
             ws_t.cell(row=t.row, column=9, value=t.desc)
             ws_t.cell(row=t.row, column=2, value=t.kategori)
-        if t.row > 1:
+        ref_row = _find_style_reference_row(ws_t, t.row)
+        if ref_row is not None:
             for col in range(1, 10):
-                ref_cell = ws_t.cell(row=t.row - 1, column=col)
+                ref_cell = ws_t.cell(row=ref_row, column=col)
                 this_cell = ws_t.cell(row=t.row, column=col)
                 this_cell.font = copy.copy(ref_cell.font)
                 this_cell.number_format = ref_cell.number_format
