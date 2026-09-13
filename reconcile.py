@@ -146,6 +146,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["hutang", "pinjaman"], "direction": "keluar", "category": "Pembayaran Hutang", "sheet_contains": None},
     {"any": ["setoran via cdm"], "category": "Transaksi Internal", "sheet_contains": None},
     {"any": ["pemindahbukuan", "transfer internal"], "category": "Transaksi Internal", "sheet_contains": None},
+    {"any": ["visionet"], "category": "Penjualan Grabfood", "sheet_contains": None},
     {"any": ["tarik tunai qris"], "category": "Penjualan", "sheet_contains": None},
     {"any": ["tarik tunai"], "category": "Penjualan", "sheet_contains": "kas"},
     {"any": ["visionet"], "category": "Penjualan", "sheet_contains": None},
@@ -249,6 +250,7 @@ _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_categor
     "belanja bahan", "overhead", "konsumsi dan liburan", "belanja utilitas",
     "tools dan equipments", "kemasan", "subscription", "sewa dan maintenance bangunan",
     "reparasi dan maintenance tools dan mesin", "pajak dan administrasi", "belanja assets",
+    "penjualan grabfood", "penjualan shopeefood",
 ]))
 
 
@@ -1699,7 +1701,7 @@ def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
 # Laporan Laba Rugi
 # ---------------------------------------------------------------------------
 
-INCOME_CATEGORIES_REVENUE = ["Penjualan", "Penjualan Shopeefood"]
+INCOME_CATEGORIES_REVENUE = ["Penjualan", "Penjualan Shopeefood", "Penjualan Grabfood"]
 
 # Kategori beban yang dicocokkan persis apa adanya (SUMIF biasa) - LAYER
 # 1 (bot konversi), tidak boleh ada istilah Layer 2 (COGS/OpEx/CapEx) di
