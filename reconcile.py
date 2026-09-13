@@ -1882,12 +1882,19 @@ def run_rekon_lokal(path1, path2, out1, out2):
         # transfer internal matched, terlepas dari kategori asalnya
         # (mis. 'Transfer Lainnya'/'New Kategori' sebelum ketemu
         # pasangan). Keterangan (B) diseragamkan jadi 'Transfer ke/dari
-        # <rekening>' - Keterangan LAMA diarsipkan ke Keterangan
-        # Tambahan (I) dulu sebelum ditimpa, supaya tidak hilang.
+        # <rekening>'. Keterangan Tambahan (I) ditulis 'Solved <Subjek>
+        # to <Objek>' - penanda EKSPLISIT bahwa baris ini SUDAH selesai
+        # direkon, supaya kalau /rekonlokal dijalankan LAGI nanti dengan
+        # file pasangan yang BEDA (baris ini otomatis tidak ketemu match
+        # di run itu, karena rekening lawannya tidak ada di file yang
+        # dibandingkan), baris ini TIDAK dihighlight merah lagi -
+        # sudah terbukti selesai dari run sebelumnya, bukan genuinely
+        # belum direkon.
         ws_p.cell(row=pengirim.row, column=3, value="Transaksi Internal")
         ws_r.cell(row=penerima.row, column=3, value="Transaksi Internal")
-        ws_p.cell(row=pengirim.row, column=9, value=ws_p.cell(row=pengirim.row, column=2).value)
-        ws_r.cell(row=penerima.row, column=9, value=ws_r.cell(row=penerima.row, column=2).value)
+        solved_note = f"Solved {pengirim.sheet} to {penerima.sheet}"
+        ws_p.cell(row=pengirim.row, column=9, value=solved_note)
+        ws_r.cell(row=penerima.row, column=9, value=solved_note)
         ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {penerima.sheet}")
         ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {pengirim.sheet}")
         fill = _bank_group_fill(penerima.sheet)
@@ -1910,6 +1917,13 @@ def run_rekon_lokal(path1, path2, out1, out2):
             continue
         src = m.src
         if (src.subjek or "").strip() == (src.objek or "").strip():
+            continue
+        # Sudah pernah "Solved <X> to <Y>" dari run /rekonlokal
+        # SEBELUMNYA (dengan file pasangan yang berbeda) - baris ini
+        # SUDAH selesai direkon, cuma kebetulan rekening lawannya tidak
+        # ada di file yang dibandingkan pada run kali ini. Bukan
+        # genuinely belum direkon - jangan dihighlight merah lagi.
+        if (src.ket or "").strip().lower().startswith("solved "):
             continue
         n_belum_rekon += 1
         wb_t, sheet_t = name_to_real[src.sheet]
