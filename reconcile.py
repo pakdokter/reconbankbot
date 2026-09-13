@@ -1685,6 +1685,53 @@ def _bank_group_fill(sheet_title):
     return None
 
 
+def _gaji_rekon_lokal_info(t):
+    """Kalau transaksi ini kemungkinan besar Gaji (Kategori mengandung
+    kata 'gaji'), kembalikan (nama_depan, nama_bulan, tahun,
+    is_bulan_ini) - None kalau bukan transaksi gaji atau tanggalnya
+    tidak terbaca.
+
+    Bulan gaji ditentukan (sesuai kontrak kategori v3 §3):
+    1. Kalau ada teks eksplisit "Gaji <Bulan>" di Keterangan/Keterangan
+       Tambahan (paling bisa diandalkan, ambil apa adanya dari sumber).
+    2. Kalau tidak ada, pakai tanggal transaksi: tanggal <=15 (awal
+       bulan) -> gaji bulan SEBELUMNYA (accrual, telat dibayar),
+       tanggal >15 -> gaji bulan transaksi itu sendiri.
+
+    Nama depan diambil dari kata pertama di Objek."""
+    if "gaji" not in (t.kategori or "").lower():
+        return None
+    tgl = coerce_date(t.date)
+    if tgl is None:
+        return None
+    objek = (t.objek or "").strip()
+    nama_depan = objek.split()[0].capitalize() if objek else "Pegawai"
+
+    text = f"{t.desc or ''} {t.ket or ''}".lower()
+    bulan_idx = None
+    for i, nama_bulan in enumerate(MONTHS_ID):
+        if i == 0:
+            continue
+        if re.search(rf"\bgaji\s+{nama_bulan.lower()}\b", text):
+            bulan_idx = i
+            break
+
+    if bulan_idx is not None:
+        # tahun: kalau bulan gaji ini "lebih besar" dari bulan transaksi
+        # (mis. transaksi Januari tapi teks bilang "Gaji Desember"),
+        # berarti tahun sebelumnya - selain itu tahun sama dgn transaksi.
+        tahun = tgl.year - 1 if bulan_idx > tgl.month else tgl.year
+    elif tgl.day <= 15:
+        bulan_idx = tgl.month - 1 if tgl.month > 1 else 12
+        tahun = tgl.year if tgl.month > 1 else tgl.year - 1
+    else:
+        bulan_idx = tgl.month
+        tahun = tgl.year
+
+    is_bulan_ini = (bulan_idx == tgl.month and tahun == tgl.year)
+    return nama_depan, MONTHS_ID[bulan_idx], tahun, is_bulan_ini
+
+
 def _infer_account_name(txns):
     """Tebak nama/kode rekening dari data transaksinya sendiri - ambil
     nilai Subjek/Objek (gabungan) yang PALING SERING muncul, kecuali
@@ -1835,6 +1882,22 @@ def run_rekon_lokal(path1, path2, out1, out2):
         cell_b = ws_t.cell(row=t.row, column=2)
         cell_b.value = t.kategori or cell_b.value
         cell_b.font = Font(name="Calibri", size=11, bold=False, italic=False, color="000000")
+
+    # Transaksi terindikasi Gaji - Keterangan (B) diseragamkan jadi
+    # "Gaji <Nama Depan> <Bulan> <Tahun>" (nama depan dari Objek), dan
+    # Kategori (C) dipastikan "Gaji Bulan Ini" atau "Gaji Accrual"
+    # (bulan sebelumnya, dibayar telat/awal bulan) - lihat
+    # _gaji_rekon_lokal_info untuk logika penentuan bulan gajinya.
+    for t in all_txns:
+        info = _gaji_rekon_lokal_info(t)
+        if info is None:
+            continue
+        nama_depan, bulan_nama, tahun, is_bulan_ini = info
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
+        ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
 
     wb1.save(out1)
     wb2.save(out2)
