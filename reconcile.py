@@ -1713,6 +1713,43 @@ def _bank_group_fill(sheet_title):
     return None
 
 
+# Vendor Belanja Bahan/Kemasan yang keterangannya sering ditulis beda-
+# beda di sumber (typo/singkatan/variasi ejaan) - diseragamkan di
+# /rekonlokal jadi SATU nama baku per vendor, sekaligus dipastikan
+# kategorinya benar. Urutan dalam grup: dari yang PALING SPESIFIK ke
+# yang paling umum (dicek pakai batas kata/regex, bukan substring
+# polos, supaya kata pendek seperti "SB"/"Pasar" tidak salah tangkap
+# teks lain yang kebetulan mengandungnya).
+_KAS_BUKU_VENDOR_RULES = [
+    (["belanja sb", "sb"], "Sinar Bahagia", "Belanja Bahan"),
+    (["belanja amanah", "amanah"], "Amanah", "Belanja Bahan"),
+    (["belanja fadhilah", "fadhilah"], "Fadhilah", "Belanja Bahan"),
+    (["belanja primer raya", "primer raya", "primer"], "Primer", "Belanja Bahan"),
+    (["belanja pasar", "pasar"], "Pasar", "Belanja Bahan"),
+    (["belanja abadi", "abadi"], "Pasar", "Belanja Bahan"),
+    (["dinda food", "dinda frozen", "belanja dinda"], "Dinda Food and Frozen", "Belanja Bahan"),
+    (["belanja mak opik", "mak opik", "mak opi"], "Mak Opik", "Belanja Bahan"),
+    (["galon", "cleo"], "Air Mineral", "Belanja Bahan"),
+    (["belanja arumi", "arumi"], "Arumi", "Kemasan"),
+    (["masuya"], "UHT dan Pasta", "Belanja Bahan"),
+]
+
+
+def _kas_buku_vendor_info(t):
+    """Kalau Keterangan/Objek transaksi ini mengandung salah satu kata
+    kunci vendor yang dikenal (lihat _KAS_BUKU_VENDOR_RULES), kembalikan
+    (keterangan_baru, kategori_baru) - None kalau tidak ada yang cocok.
+    Pencocokan pakai batas kata (regex \\b), bukan substring polos -
+    penting untuk kata pendek seperti "SB"/"Pasar" yang berisiko salah
+    tangkap kalau cuma dicek 'in' biasa."""
+    text = (t.desc or "").lower()
+    for keywords, keterangan_baru, kategori_baru in _KAS_BUKU_VENDOR_RULES:
+        for kw in keywords:
+            if re.search(r"\b" + re.escape(kw) + r"\b", text):
+                return keterangan_baru, kategori_baru
+    return None
+
+
 def _gaji_rekon_lokal_info(t):
     """Kalau transaksi ini kemungkinan besar Gaji (Kategori mengandung
     kata 'gaji'), kembalikan (nama_depan, nama_bulan, tahun,
@@ -2038,6 +2075,26 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
         ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
 
+    # Vendor Belanja Bahan/Kemasan yang sering ditulis beda-beda di
+    # sumber - diseragamkan jadi satu nama baku, Kategori dipastikan
+    # benar. Keterangan lama diarsip ke Keterangan Tambahan dulu.
+    vendor_fixed_ids = set()
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        info = _kas_buku_vendor_info(t)
+        if info is None:
+            continue
+        keterangan_baru, kategori_baru = info
+        if t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru:
+            continue  # sudah benar, tidak perlu apa-apa
+        vendor_fixed_ids.add(id(t))
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        ws_t.cell(row=t.row, column=2, value=keterangan_baru)
+        ws_t.cell(row=t.row, column=3, value=kategori_baru)
+
     # Kategori mencurigakan - Kategori TERSIMPAN beda dari yang
     # DIHITUNG sistem berdasarkan Keterangan/Objek (effective_kategori,
     # logika sama persis dipakai flow rekonsiliasi utama). HANYA
@@ -2053,6 +2110,8 @@ def run_rekon_lokal(path1, path2, out1, out2):
     for t in all_txns:
         if t.is_opening:
             continue
+        if id(t) in vendor_fixed_ids:
+            continue  # baru saja dibetulkan pass vendor di atas
         asli = (t.kategori or "").strip().lower()
         hitung = (t.effective_kategori or "").strip().lower()
         if not asli or asli == hitung or hitung == "kategori baru":
