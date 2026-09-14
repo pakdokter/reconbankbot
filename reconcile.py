@@ -1694,6 +1694,7 @@ BCA_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")  # biru
 JAGO_MATCH_FILL = PatternFill("solid", fgColor="FCD9B6")  # orange
 BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 REKONLOKAL_UNMATCHED_FILL = PatternFill("solid", fgColor="FFC7CE")  # merah
+REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="D9C6F2")  # ungu
 
 
 def _bank_group_fill(sheet_title):
@@ -1836,13 +1837,18 @@ def run_rekon_lokal(path1, path2, out1, out2):
        setoran tunai di atas, yang memang wajar tidak match) dihighlight
        MERAH - supaya kelihatan jelas mana yang masih perlu ditelusuri
        manual.
+    5. SEMUA transaksi (bukan cuma transfer internal) yang Kategori
+       tersimpannya beda dari yang dihitung sistem berdasarkan
+       Keterangan/Objek - dihighlight UNGU. HANYA menandai untuk audit
+       manual, TIDAK PERNAH mengubah Kategori/Keterangan aslinya (beberapa
+       mismatch bisa jadi false positive).
     Selain koreksi & highlight itu, KEDUA FILE DIKEMBALIKAN APA ADANYA -
     tidak ada sheet tambahan, tidak ada kategorisasi/perhitungan lain.
     Split/merge (combo_matches) SENGAJA di luar cakupan - fitur ini
     murni pasangan 1:1 sederhana.
 
-    Return dict {"n_high": ..., "n_medium": ..., "n_belum_rekon": ...}
-    untuk caption bot."""
+    Return dict {"n_high": ..., "n_medium": ..., "n_belum_rekon": ...,
+    "n_kategori_mencurigakan": ...} untuk caption bot."""
     wb1 = openpyxl.load_workbook(path1)
     wb2 = openpyxl.load_workbook(path2)
     sheets1 = [s for s in wb1.sheetnames if _looks_like_account_sheet(wb1[s])]
@@ -1863,6 +1869,16 @@ def run_rekon_lokal(path1, path2, out1, out2):
             split_fliptech_combined_rows(wb[sn])
             txns, _ = read_account_sheet(wb[sn])
             akun = _infer_account_name(txns) or f"{sn} ({tag})"
+            # Tabrakan nama rekening ANTAR FILE - bisa terjadi walau
+            # _infer_account_name jalan benar, kalau KEDUA file memang
+            # jenis yang sama (mis. dua file Kas Buku, keduanya sama-
+            # sama paling sering menyebut diri sendiri "Kas/Buku").
+            # Tanpa disambiguasi ini, entry file PERTAMA di name_to_real
+            # TERTIMPA file KEDUA - koreksi yang seharusnya ditulis ke
+            # file pertama malah ketulis ke file kedua (row number sama,
+            # tapi workbook/sheet beda -> data campur aduk).
+            if akun in name_to_real:
+                akun = f"{akun} ({tag})"
             for t in txns:
                 t.sheet = akun
             all_txns.extend(txns)
@@ -2022,9 +2038,39 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
         ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
 
+    # Kategori mencurigakan - Kategori TERSIMPAN beda dari yang
+    # DIHITUNG sistem berdasarkan Keterangan/Objek (effective_kategori,
+    # logika sama persis dipakai flow rekonsiliasi utama). HANYA
+    # menandai (highlight ungu), TIDAK PERNAH mengubah Kategori/
+    # Keterangan aslinya - ini murni sinyal untuk audit manual, bukan
+    # auto-koreksi (beberapa mismatch bisa jadi false positive, aturan
+    # kata kunci tidak selalu sempurna menangkap konteks).
+    #
+    # 'Belanja Operasional' -> 'Overhead' DIKECUALIKAN dari sini - itu
+    # transformasi yang MEMANG disengaja (penggabungan kategori lama ke
+    # baru), bukan kesalahan kategorisasi genuine.
+    n_kategori_mencurigakan = 0
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        asli = (t.kategori or "").strip().lower()
+        hitung = (t.effective_kategori or "").strip().lower()
+        if not asli or asli == hitung or hitung == "kategori baru":
+            continue
+        if asli == "belanja operasional" and hitung == "overhead":
+            continue
+        n_kategori_mencurigakan += 1
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        for c in range(1, 10):
+            ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+
     wb1.save(out1)
     wb2.save(out2)
-    return {"n_high": n_high, "n_medium": n_medium, "n_belum_rekon": n_belum_rekon}
+    return {
+        "n_high": n_high, "n_medium": n_medium, "n_belum_rekon": n_belum_rekon,
+        "n_kategori_mencurigakan": n_kategori_mencurigakan,
+    }
 
 
 def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
