@@ -93,6 +93,18 @@ PERSONAL_EXPENSE_KEYWORDS = shared_rules.get("personal_expense_keywords", [
     "pengeluaran pribadi", "keperluan pribadi", "kepentingan pribadi", "milik pribadi",
 ])
 
+# Nama depan pegawai yang DIKETAHUI dipakai lebih dari satu orang (mis.
+# "Baiq" - gelar/awalan umum, dipakai oleh "Baiq Sabrina Ameli" DAN
+# "Baiq Widiani Rintis Sari" di EMPLOYEE_ALIASES quarterly.py) - kalau
+# nama depan hasil ekstraksi dari Objek/Keterangan transaksi Gaji
+# persis salah satu dari daftar ini, TIDAK BOLEH dianggap identitas
+# pasti (lihat _gaji_rekon_lokal_info) - datanya sendiri (Objek cuma
+# "Baiq" tanpa nama belakang) genuinely tidak cukup untuk membedakan,
+# menebak dari nominal beresiko salah dan terlihat pasti padahal cuma
+# tebakan. Ditandai eksplisit "(?)" untuk verifikasi manual, BUKAN
+# dipaksakan ke salah satu nama lengkap.
+AMBIGUOUS_FIRST_NAMES = shared_rules.get("ambiguous_first_names", ["baiq"])
+
 # Deklarasi HUTANG BARU yang masuk lewat transfer bank - kata kunci ini
 # TIDAK mengubah kategori (transaksi "hutang"/"pinjaman" + arah masuk
 # SUDAH otomatis jadi Modal & Setoran Pemilik lewat aturan yang ada di
@@ -1772,6 +1784,12 @@ def _gaji_rekon_lokal_info(t):
         return None
     objek = (t.objek or "").strip()
     nama_depan = objek.split()[0].capitalize() if objek else "Pegawai"
+    if nama_depan.lower() in AMBIGUOUS_FIRST_NAMES:
+        # Nama depan ini dipakai LEBIH DARI SATU pegawai, dan data
+        # sumbernya (Objek) cuma satu kata ini saja - tidak ada nama
+        # belakang/info lain untuk membedakan. Tandai eksplisit, jangan
+        # dipaksakan ke salah satu pegawai (lihat AMBIGUOUS_FIRST_NAMES).
+        nama_depan = f"{nama_depan} (?)"
 
     text = f"{t.desc or ''} {t.ket or ''}".lower()
     bulan_idx = None
@@ -2075,6 +2093,12 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
         ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
         ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
+        if "(?)" in nama_depan:
+            # Nama depan ambigu (dipakai >1 pegawai, data sumber tidak
+            # cukup buat membedakan) - highlight ungu yang sama dengan
+            # 'Kategori mencurigakan', sama-sama butuh verifikasi manual.
+            for c in range(1, 10):
+                ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
 
     # Rename kategori LEGACY (nama lama/pendek) ke nama resmi kontrak
     # kategori terbaru - transformasi yang MEMANG disengaja, konsisten
