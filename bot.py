@@ -316,7 +316,11 @@ async def handle_rekonlokal_document(update: Update, context: ContextTypes.DEFAU
         return
     context.user_data["rekonlokal_mode"] = False
     context.user_data["rekonlokal_files"] = []
-    caption = f"Transfer cocok: {result['n_high']} high, {result['n_medium']} medium. Belum direkon: {result['n_belum_rekon']}."
+    caption = (
+        f"Transfer cocok: {result['n_high']} high, {result['n_medium']} medium. "
+        f"Belum direkon: {result['n_belum_rekon']}. "
+        f"Kategori mencurigakan: {result['n_kategori_mencurigakan']}."
+    )
     await status_msg.delete()
     with open(out1, "rb") as f1, open(out2, "rb") as f2:
         await update.message.reply_document(document=f1, filename=os.path.basename(out1))
