@@ -193,6 +193,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"kategori_asli": "belanja operasional", "category": "Overhead", "sheet_contains": None},
     {"kategori_asli": "belanja konsumsi", "category": "Konsumsi dan Liburan", "sheet_contains": None},
     {"kategori_asli": "reparasi dan maintenance", "category": "Reparasi dan Maintenance Tools dan Mesin", "sheet_contains": None},
+    {"kategori_asli": "reparasi", "category": "Reparasi dan Maintenance Tools dan Mesin", "sheet_contains": None},
     {"kategori_asli": "pajak daerah", "category": "Pajak dan Administrasi", "sheet_contains": None},
     {"kategori_asli": "biaya renovasi atap", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
 ]
@@ -2075,6 +2076,31 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
         ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
 
+    # Rename kategori LEGACY (nama lama/pendek) ke nama resmi kontrak
+    # kategori terbaru - transformasi yang MEMANG disengaja, konsisten
+    # dengan Kategori Layer 1 resmi. HANYA menulis ulang kolom Kategori
+    # (C) - Keterangan (B) dibiarkan apa adanya (sudah cukup deskriptif,
+    # cuma label Kategori-nya yang ketinggalan zaman).
+    _legacy_kategori_rename = {
+        "belanja operasional": "Overhead",
+        "reparasi": "Reparasi dan Maintenance Tools dan Mesin",
+        "reparasi dan maintenance": "Reparasi dan Maintenance Tools dan Mesin",
+        "belanja konsumsi": "Konsumsi dan Liburan",
+        "pajak daerah": "Pajak dan Administrasi",
+        "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
+    }
+    legacy_renamed_ids = set()
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        asli = (t.kategori or "").strip().lower()
+        target = _legacy_kategori_rename.get(asli)
+        if target is None or target == (t.kategori or "").strip():
+            continue
+        legacy_renamed_ids.add(id(t))
+        wb_t, sheet_t = name_to_real[t.sheet]
+        wb_t[sheet_t].cell(row=t.row, column=3, value=target)
+
     # Vendor Belanja Bahan/Kemasan yang sering ditulis beda-beda di
     # sumber - diseragamkan jadi satu nama baku, Kategori dipastikan
     # benar. Keterangan lama diarsip ke Keterangan Tambahan dulu.
@@ -2103,20 +2129,20 @@ def run_rekon_lokal(path1, path2, out1, out2):
     # auto-koreksi (beberapa mismatch bisa jadi false positive, aturan
     # kata kunci tidak selalu sempurna menangkap konteks).
     #
-    # 'Belanja Operasional' -> 'Overhead' DIKECUALIKAN dari sini - itu
-    # transformasi yang MEMANG disengaja (penggabungan kategori lama ke
-    # baru), bukan kesalahan kategorisasi genuine.
+    # 'Belanja Operasional' -> 'Overhead', 'Reparasi' -> 'Reparasi dan
+    # Maintenance Tools dan Mesin', dst DIKECUALIKAN dari sini - sudah
+    # AKTIF dikoreksi di pass _legacy_kategori_rename di atas (lihat
+    # legacy_renamed_ids), bukan kesalahan kategorisasi genuine yang
+    # perlu ditandai untuk audit manual lagi.
     n_kategori_mencurigakan = 0
     for t in all_txns:
         if t.is_opening:
             continue
-        if id(t) in vendor_fixed_ids:
-            continue  # baru saja dibetulkan pass vendor di atas
+        if id(t) in vendor_fixed_ids or id(t) in legacy_renamed_ids:
+            continue  # baru saja dibetulkan pass di atas
         asli = (t.kategori or "").strip().lower()
         hitung = (t.effective_kategori or "").strip().lower()
         if not asli or asli == hitung or hitung == "kategori baru":
-            continue
-        if asli == "belanja operasional" and hitung == "overhead":
             continue
         n_kategori_mencurigakan += 1
         wb_t, sheet_t = name_to_real[t.sheet]
