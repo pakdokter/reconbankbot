@@ -2090,6 +2090,9 @@ def run_rekon_lokal(path1, path2, out1, out2):
     # Kategori (C) dipastikan "Gaji Bulan Ini" atau "Gaji Accrual"
     # (bulan sebelumnya, dibayar telat/awal bulan) - lihat
     # _gaji_rekon_lokal_info untuk logika penentuan bulan gajinya.
+    _gaji_auto_pattern = re.compile(
+        r"^gaji\s+.+\s+(" + "|".join(m.lower() for m in MONTHS_ID if m) + r")\s+\d{4}$"
+    )
     for t in all_txns:
         info = _gaji_rekon_lokal_info(t)
         if info is None:
@@ -2097,7 +2100,26 @@ def run_rekon_lokal(path1, path2, out1, out2):
         nama_depan, bulan_nama, tahun, is_bulan_ini = info
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        desc_sekarang = (t.desc or "").strip()
+        if not _gaji_auto_pattern.match(desc_sekarang.lower()):
+            # Cuma arsipkan Keterangan LAMA ke Keterangan Tambahan kalau
+            # itu genuinely teks asli dari sumber - kalau desc SEKARANG
+            # sudah berpola "Gaji <apapun> <Bulan> <Tahun>" (artinya baris
+            # ini SUDAH PERNAH diproses /rekonlokal sebelumnya, mungkin
+            # pakai versi kode lama yang masih menandai "(?)"), jangan
+            # arsipkan teks hasil olahan lama itu - biarkan Keterangan
+            # Tambahan apa adanya, tidak perlu menumpuk teks stale.
+            ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        elif "(?)" not in nama_depan:
+            # Kasus jalan ulang: desc SEKARANG sudah pola auto (dari run
+            # SEBELUMNYA), TAPI nama depan yang dihitung SEKARANG sudah
+            # tidak ambigu lagi (mis. Objek sudah dilengkapi jadi "Baiq
+            # Sabrina" sejak run terakhir) - Keterangan Tambahan mungkin
+            # masih menyimpan teks "(?)" basi dari run lama, bersihkan
+            # supaya tidak menyesatkan seolah masih ambigu.
+            ket_tambahan_sekarang = str(ws_t.cell(row=t.row, column=9).value or "")
+            if "(?)" in ket_tambahan_sekarang and _gaji_auto_pattern.match(ket_tambahan_sekarang.lower().replace("(?)", "x")):
+                ws_t.cell(row=t.row, column=9, value="-")
         ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
         ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
         # Objek diseragamkan jadi Title Case (huruf awal tiap kata
