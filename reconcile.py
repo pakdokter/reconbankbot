@@ -1783,8 +1783,15 @@ def _gaji_rekon_lokal_info(t):
     if tgl is None:
         return None
     objek = (t.objek or "").strip()
-    nama_depan = objek.split()[0].capitalize() if objek else "Pegawai"
-    if nama_depan.lower() in AMBIGUOUS_FIRST_NAMES:
+    objek_kata = objek.split()
+    # Dua kata PERTAMA dari Objek (bukan cuma satu) - supaya kasus
+    # seperti "Baiq Sabrina" vs "Baiq Widiani" otomatis kebeda dari
+    # namanya sendiri, tanpa perlu nunggu ketemu kasus ambigu dulu satu
+    # per satu. Kalau Objek CUMA satu kata (mis. "Baiq" doang, tanpa
+    # nama belakang di data sumber sama sekali), tidak ada kata kedua
+    # untuk diambil - baru di titik itu cek AMBIGUOUS_FIRST_NAMES.
+    nama_depan = " ".join(w.capitalize() for w in objek_kata[:2]) if objek_kata else "Pegawai"
+    if len(objek_kata) <= 1 and nama_depan.lower() in AMBIGUOUS_FIRST_NAMES:
         # Nama depan ini dipakai LEBIH DARI SATU pegawai, dan data
         # sumbernya (Objek) cuma satu kata ini saja - tidak ada nama
         # belakang/info lain untuk membedakan. Tandai eksplisit, jangan
@@ -2093,6 +2100,13 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
         ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
         ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
+        # Objek diseragamkan jadi Title Case (huruf awal tiap kata
+        # kapital, sisanya kecil) - data sumber sering ALL CAPS
+        # ("ADINDA NURUSSHAFWA"), tidak enak dibaca dan tidak konsisten
+        # dengan gaya penulisan nama di tempat lain.
+        objek_asli = (ws_t.cell(row=t.row, column=8).value or "").strip()
+        if objek_asli:
+            ws_t.cell(row=t.row, column=8, value=" ".join(w.capitalize() for w in objek_asli.split()))
         if "(?)" in nama_depan:
             # Nama depan ambigu (dipakai >1 pegawai, data sumber tidak
             # cukup buat membedakan) - highlight ungu yang sama dengan
