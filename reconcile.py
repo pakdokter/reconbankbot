@@ -265,6 +265,16 @@ _PROTECTED_FROM_CATEGORY_OVERRIDE = set(shared_rules.get("protected_from_categor
     "tools dan equipments", "kemasan", "subscription", "sewa dan maintenance bangunan",
     "reparasi dan maintenance tools dan mesin", "pajak dan administrasi", "belanja assets",
     "penjualan grabfood", "penjualan shopeefood",
+    # Kategori biaya jasa perbankan - transaksi ini SENDIRI adalah biaya
+    # admin/bunga bank, terlepas dari APA yang disebut di catatan
+    # referensinya (mis. "Biaya terkait transaksi: Top Up Gopay ..." -
+    # itu keterangan TENTANG transaksi apa yang memicu biaya ini, BUKAN
+    # berarti biayanya sendiri harus dikategorikan sebagai belanja/top up
+    # itu). Tanpa proteksi ini, kata kunci seperti "gopay"/"top up" di
+    # catatan referensi bisa keliru menimpa kategori biaya bank yang
+    # sudah benar jadi kategori lain (mis. Overhead).
+    "biaya admin bank", "biaya admin & pajak bank", "biaya admin dan bunga bank",
+    "bunga dan admin bank",
 ]))
 
 
@@ -1775,32 +1785,35 @@ def _bank_group_fill(sheet_title):
 # polos, supaya kata pendek seperti "SB"/"Pasar" tidak salah tangkap
 # teks lain yang kebetulan mengandungnya).
 _KAS_BUKU_VENDOR_RULES = [
-    (["belanja sb", "sb"], "Sinar Bahagia", "Belanja Bahan"),
-    (["belanja amanah", "amanah"], "Amanah", "Belanja Bahan"),
-    (["belanja fadhilah", "fadhilah"], "Fadhilah", "Belanja Bahan"),
-    (["belanja primer raya", "primer raya", "primer"], "Primer", "Belanja Bahan"),
-    (["belanja pasar", "pasar"], "Pasar", "Belanja Bahan"),
-    (["belanja abadi", "abadi"], "Pasar", "Belanja Bahan"),
-    (["dinda food", "dinda frozen", "belanja dinda"], "Dinda Food and Frozen", "Belanja Bahan"),
-    (["belanja mak opik", "mak opik", "mak opi"], "Mak Opik", "Belanja Bahan"),
-    (["galon", "cleo"], "Air Mineral", "Belanja Bahan"),
-    (["belanja arumi", "arumi"], "Arumi", "Kemasan"),
-    (["masuya"], "UHT dan Pasta", "Belanja Bahan"),
+    (["belanja sb", "sb"], "Sinar Bahagia", "Belanja Bahan", None),
+    (["belanja amanah", "amanah"], "Amanah", "Belanja Bahan", None),
+    (["belanja fadhilah", "fadhilah"], "Fadhilah", "Belanja Bahan", None),
+    (["belanja primer raya", "primer raya", "primer"], "Primer", "Belanja Bahan", None),
+    (["belanja pasar", "pasar"], "Pasar", "Belanja Bahan", None),
+    (["belanja abadi", "abadi"], "Pasar", "Belanja Bahan", None),
+    (["dinda food", "dinda frozen", "belanja dinda"], "Dinda Food and Frozen", "Belanja Bahan", None),
+    (["belanja mak opik", "mak opik", "mak opi"], "Mak Opik", "Belanja Bahan", None),
+    (["galon", "cleo"], "Air Mineral", "Belanja Bahan", None),
+    (["belanja arumi", "arumi"], "Arumi", "Kemasan", None),
+    (["masuya"], "UHT dan Pasta", "Belanja Bahan", None),
+    (["pembayaran briva ke tokopedia", "tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
 ]
 
 
 def _kas_buku_vendor_info(t):
     """Kalau Keterangan/Objek transaksi ini mengandung salah satu kata
     kunci vendor yang dikenal (lihat _KAS_BUKU_VENDOR_RULES), kembalikan
-    (keterangan_baru, kategori_baru) - None kalau tidak ada yang cocok.
-    Pencocokan pakai batas kata (regex \\b), bukan substring polos -
-    penting untuk kata pendek seperti "SB"/"Pasar" yang berisiko salah
-    tangkap kalau cuma dicek 'in' biasa."""
+    (keterangan_baru, kategori_baru, objek_baru_atau_None) - None kalau
+    tidak ada yang cocok. objek_baru None berarti Objek TIDAK disentuh
+    (kebanyakan vendor tidak perlu). Pencocokan pakai batas kata (regex
+    \\b), bukan substring polos - penting untuk kata pendek seperti
+    "SB"/"Pasar" yang berisiko salah tangkap kalau cuma dicek 'in'
+    biasa."""
     text = (t.desc or "").lower()
-    for keywords, keterangan_baru, kategori_baru in _KAS_BUKU_VENDOR_RULES:
+    for keywords, keterangan_baru, kategori_baru, objek_baru in _KAS_BUKU_VENDOR_RULES:
         for kw in keywords:
             if re.search(r"\b" + re.escape(kw) + r"\b", text):
-                return keterangan_baru, kategori_baru
+                return keterangan_baru, kategori_baru, objek_baru
     return None
 
 
@@ -2202,6 +2215,42 @@ def run_rekon_lokal(path1, path2, out1, out2):
         wb_t, sheet_t = name_to_real[t.sheet]
         wb_t[sheet_t].cell(row=t.row, column=3, value=target)
 
+    # Objek diinferensi dari pola di Keterangan Tambahan (I) - beberapa
+    # bank menulis catatan referensi yang menyebut nama penerima/pihak
+    # lain di sana, tapi Objek transaksinya sendiri kosong/generik.
+    #   "GoPay <nomor>" -> Objek "Gopay Owner"
+    #   "BCA <nomor rekening>" -> Objek "BCA-<3 digit terakhir>"
+    _gopay_ket_pattern = re.compile(r"\bgopay\s+0?\d{6,}\b", re.IGNORECASE)
+    _bca_ket_pattern = re.compile(r"\bbca\s+(\d{6,})\b", re.IGNORECASE)
+    for t in all_txns:
+        ket_text = t.ket or ""
+        objek_baru = None
+        if _gopay_ket_pattern.search(ket_text):
+            objek_baru = "Gopay Owner"
+        else:
+            m = _bca_ket_pattern.search(ket_text)
+            if m:
+                objek_baru = f"BCA-{m.group(1)[-3:]}"
+        if objek_baru is None or (t.objek or "").strip() == objek_baru:
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        wb_t[sheet_t].cell(row=t.row, column=8, value=objek_baru)
+
+    # Keterangan berupa KODE ANGKA PANJANG (mis. nomor rekening pengirim
+    # diulang - format umum di BRI) - diseragamkan jadi "Setoran
+    # <rekening>", konsisten dengan pola setoran tunai lain, BUKAN
+    # dibiarkan sebagai deretan angka yang tidak informatif. Hanya untuk
+    # transaksi KREDIT (uang masuk) - konsisten dengan
+    # _looks_like_long_numeric_code() yang sudah dipakai di
+    # effective_kategori untuk kasus yang sama.
+    for t in all_txns:
+        if t.nominal <= 0 or not _looks_like_long_numeric_code(t.desc):
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        ws_t.cell(row=t.row, column=2, value=f"Setoran {t.sheet}")
+
     # Vendor Belanja Bahan/Kemasan yang sering ditulis beda-beda di
     # sumber - diseragamkan jadi satu nama baku, Kategori dipastikan
     # benar. Keterangan lama diarsip ke Keterangan Tambahan dulu.
@@ -2212,8 +2261,10 @@ def run_rekon_lokal(path1, path2, out1, out2):
         info = _kas_buku_vendor_info(t)
         if info is None:
             continue
-        keterangan_baru, kategori_baru = info
-        if t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru:
+        keterangan_baru, kategori_baru, objek_baru = info
+        sudah_benar = (t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru
+                       and (objek_baru is None or (t.objek or "").strip() == objek_baru))
+        if sudah_benar:
             continue  # sudah benar, tidak perlu apa-apa
         vendor_fixed_ids.add(id(t))
         wb_t, sheet_t = name_to_real[t.sheet]
@@ -2221,6 +2272,8 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
+        if objek_baru is not None:
+            ws_t.cell(row=t.row, column=8, value=objek_baru)
 
     # Kategori mencurigakan - Kategori TERSIMPAN beda dari yang
     # DIHITUNG sistem berdasarkan Keterangan/Objek (effective_kategori,
