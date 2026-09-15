@@ -1709,6 +1709,47 @@ BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 REKONLOKAL_UNMATCHED_FILL = PatternFill("solid", fgColor="FFC7CE")  # merah
 REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="D9C6F2")  # ungu
 
+# Highlight berdasarkan GRUP KATEGORI Layer 1 - dipakai di /rekonlokal
+# MAUPUN flow rekonsiliasi utama (bukan cuma satu tempat), supaya
+# konsisten dimanapun user melihat datanya. Beda dari highlight transfer
+# (biru/orange/kuning - arah uang) dan highlight audit (merah/ungu -
+# butuh perhatian) - ini murni pengelompokan VISUAL kategori P&L supaya
+# gampang di-scan sekilas, tidak ada makna "butuh tindakan" apapun.
+CATEGORY_GROUP_FILL_MAP = {
+    "penjualan": PatternFill("solid", fgColor="C6EFCE"),  # hijau
+    "penjualan shopeefood": PatternFill("solid", fgColor="C6EFCE"),
+    "penjualan grabfood": PatternFill("solid", fgColor="C6EFCE"),
+    "belanja bahan": PatternFill("solid", fgColor="E4C9A0"),  # coklat/tan
+    "kemasan": PatternFill("solid", fgColor="E4C9A0"),
+    "overhead": PatternFill("solid", fgColor="D3D3D3"),  # abu-abu
+    "subscription": PatternFill("solid", fgColor="D3D3D3"),
+    "belanja assets": PatternFill("solid", fgColor="FFD966"),  # emas
+    "belanja utilitas": PatternFill("solid", fgColor="B2EBF2"),  # cyan/teal
+    "tools dan equipments": PatternFill("solid", fgColor="B2EBF2"),
+    "sewa dan maintenance bangunan": PatternFill("solid", fgColor="F4B6B0"),  # salmon
+    "reparasi dan maintenance tools dan mesin": PatternFill("solid", fgColor="F4B6B0"),
+    "pajak dan administrasi": PatternFill("solid", fgColor="D9D9A3"),  # olive/khaki
+    "biaya admin bank": PatternFill("solid", fgColor="D9D9A3"),
+    "marketing": PatternFill("solid", fgColor="F7C9DE"),  # pink
+    "riset dan development": PatternFill("solid", fgColor="F7C9DE"),
+    "konsumsi dan liburan": PatternFill("solid", fgColor="F7C9DE"),
+    "pengeluaran pribadi": PatternFill("solid", fgColor="E8AB8C"),  # terracotta
+}
+
+
+def category_group_fill(kategori):
+    """Warna highlight grup kategori untuk 'kategori' yang diberikan -
+    None kalau kategori ini bukan bagian dari grup manapun (mis. Kas/
+    Transaksi Internal/Modal/dst - tidak semua kategori didefinisikan
+    perlu warna kelompok). Semua kategori 'Gaji*' (Gaji Bulan Ini/Gaji
+    Accrual/pola apapun yang diawali 'gaji') dapat SATU warna yang sama,
+    dicek terpisah dari peta di atas karena namanya dinamis (bukan
+    string tetap)."""
+    k = (kategori or "").strip().lower()
+    if k.startswith("gaji"):
+        return PatternFill("solid", fgColor="FFCC99")  # peach
+    return CATEGORY_GROUP_FILL_MAP.get(k)
+
 
 def _bank_group_fill(sheet_title):
     """Tentukan warna highlight berdasarkan grup bank tujuan - BCA (semua
@@ -2209,6 +2250,28 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t = wb_t[sheet_t]
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+
+    # Highlight grup kategori (Penjualan/Belanja Bahan+Kemasan/dst) -
+    # HANYA diterapkan pada baris yang BELUM punya highlight dari pass
+    # lain (transfer biru/orange/kuning, belum-direkon merah, kategori
+    # mencurigakan ungu) - supaya highlight yang lebih spesifik/penting
+    # itu tidak tertimpa oleh pewarnaan kelompok yang sifatnya cuma
+    # visual, bukan penanda audit.
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        cell_b = ws_t.cell(row=t.row, column=2)
+        current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
+        if current_fill not in (None, "00000000"):
+            continue  # sudah ada highlight lain, jangan ditimpa
+        kategori_sekarang = ws_t.cell(row=t.row, column=3).value
+        fill = category_group_fill(kategori_sekarang)
+        if fill is None:
+            continue
+        for c in range(1, 10):
+            ws_t.cell(row=t.row, column=c).fill = fill
 
     wb1.save(out1)
     wb2.save(out2)
@@ -3246,6 +3309,27 @@ def run_reconciliation(input_path, output_path, with_statements=None):
 
     matches, combo_matches = find_matches(all_txns, account_sheets)
     correct_and_highlight_matched_transfers(wb, matches, combo_matches)
+
+    # Highlight grup kategori (Penjualan/Belanja Bahan+Kemasan/dst) -
+    # SAMA seperti di /rekonlokal - HANYA diterapkan pada baris yang
+    # BELUM punya highlight dari transfer matching di atas (biru/orange/
+    # kuning), supaya highlight arah-uang yang lebih spesifik itu tidak
+    # tertimpa oleh pewarnaan kelompok yang sifatnya cuma visual.
+    for sname in account_sheets:
+        ws = wb[sname]
+        for t in all_txns_by_sheet[sname]:
+            if t.is_opening:
+                continue
+            cell_b = ws.cell(row=t.row, column=2)
+            current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
+            if current_fill not in (None, "00000000"):
+                continue
+            fill = category_group_fill(ws.cell(row=t.row, column=3).value)
+            if fill is None:
+                continue
+            for c in range(1, 10):
+                ws.cell(row=t.row, column=c).fill = fill
+
     minus_flags = find_minus_flags(all_txns_by_sheet)
     balance_status = compute_balance_status(all_txns_by_sheet)
     new_category_flags = find_new_category_flags(all_txns_by_sheet)
