@@ -1719,6 +1719,20 @@ BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 REKONLOKAL_UNMATCHED_FILL = PatternFill("solid", fgColor="FFC7CE")  # merah
 REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="D9C6F2")  # ungu
 
+# Warna highlight yang PUNYA ARTI KHUSUS (arah transfer/belum direkon/
+# kategori mencurigakan) - dipakai untuk cek "apakah baris ini SUDAH
+# ada highlight yang lebih penting" sebelum menimpa dengan warna
+# kelompok kategori yang sifatnya cuma visual. SENGAJA tidak mengecek
+# "fill APAPUN yang bukan kosong" - banyak file sumber punya pewarnaan
+# zebra-stripe/formatting bawaan yang TIDAK ADA ARTINYA untuk sistem
+# ini, kalau itu ikut dianggap "sudah ada highlight", warna kelompok
+# kategori jadi selang-seling tidak konsisten (kena di sebagian baris,
+# tidak kena di baris lain kategori yang SAMA, cuma karena baris itu
+# kebetulan sudah punya warna latar dari sumbernya).
+_MEANINGFUL_HIGHLIGHT_HEXES = {
+    "00BDD7EE", "00FCD9B6", "00FFF2A8", "00FFC7CE", "00D9C6F2",
+}
+
 # Highlight berdasarkan GRUP KATEGORI Layer 1 - dipakai di /rekonlokal
 # MAUPUN flow rekonsiliasi utama (bukan cuma satu tempat), supaya
 # konsisten dimanapun user melihat datanya. Beda dari highlight transfer
@@ -2292,15 +2306,27 @@ def run_rekon_lokal(path1, path2, out1, out2):
     for t in all_txns:
         if t.is_opening:
             continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
         if id(t) in vendor_fixed_ids or id(t) in legacy_renamed_ids:
             continue  # baru saja dibetulkan pass di atas
         asli = (t.kategori or "").strip().lower()
         hitung = (t.effective_kategori or "").strip().lower()
         if not asli or asli == hitung or hitung == "kategori baru":
+            # TIDAK/tidak lagi mencurigakan - tapi kalau baris ini masih
+            # bertahan warna ungu dari RUN /rekonlokal SEBELUMNYA (mis.
+            # kategori sekarang sudah konsisten setelah perbaikan aturan,
+            # padahal saat run lalu masih dianggap mismatch), bersihkan
+            # supaya tidak menyesatkan seolah masih perlu diaudit -
+            # highlight grup kategori di bawah akan mewarnai ulang baris
+            # ini dengan benar kalau memang termasuk salah satu grup.
+            cell_b = ws_t.cell(row=t.row, column=2)
+            current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
+            if current_fill == "00D9C6F2":
+                for c in range(1, 10):
+                    ws_t.cell(row=t.row, column=c).fill = PatternFill(fill_type=None)
             continue
         n_kategori_mencurigakan += 1
-        wb_t, sheet_t = name_to_real[t.sheet]
-        ws_t = wb_t[sheet_t]
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
 
@@ -2317,8 +2343,8 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t = wb_t[sheet_t]
         cell_b = ws_t.cell(row=t.row, column=2)
         current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
-        if current_fill not in (None, "00000000"):
-            continue  # sudah ada highlight lain, jangan ditimpa
+        if current_fill in _MEANINGFUL_HIGHLIGHT_HEXES:
+            continue  # sudah ada highlight lain yang lebih penting, jangan ditimpa
         kategori_sekarang = ws_t.cell(row=t.row, column=3).value
         fill = category_group_fill(kategori_sekarang)
         if fill is None:
@@ -3375,7 +3401,7 @@ def run_reconciliation(input_path, output_path, with_statements=None):
                 continue
             cell_b = ws.cell(row=t.row, column=2)
             current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
-            if current_fill not in (None, "00000000"):
+            if current_fill in _MEANINGFUL_HIGHLIGHT_HEXES:
                 continue
             fill = category_group_fill(ws.cell(row=t.row, column=3).value)
             if fill is None:
