@@ -105,6 +105,17 @@ PERSONAL_EXPENSE_KEYWORDS = shared_rules.get("personal_expense_keywords", [
 # dipaksakan ke salah satu nama lengkap.
 AMBIGUOUS_FIRST_NAMES = shared_rules.get("ambiguous_first_names", ["baiq"])
 
+# Alias pemilik (owner) - kalau Subjek DAN Objek transaksi SAMA-SAMA
+# salah satu dari daftar ini, transaksi ini kemungkinan besar transfer
+# antar rekening pribadi/bisnis owner sendiri (mis. owner transfer dari
+# rekening pribadinya ke rekening bisnis) - diperlakukan sebagai
+# kandidat Transaksi Internal (lihat Txn.is_transfer), lalu tetap lewat
+# pencocokan nominal+tanggal normal (find_matches) seperti transfer
+# lain - bukan otomatis "pasti benar" tanpa verifikasi.
+OWNER_ALIASES = shared_rules.get("owner_aliases", [
+    "owner", "ojan", "kak ojan", "ozan", "pakdok", "roziyan", "ahmad roziyan hidayat",
+])
+
 # Deklarasi HUTANG BARU yang masuk lewat transfer bank - kata kunci ini
 # TIDAK mengubah kategori (transaksi "hutang"/"pinjaman" + arah masuk
 # SUDAH otomatis jadi Modal & Setoran Pemilik lewat aturan yang ada di
@@ -180,7 +191,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
              "listrik", "pln"],
      "category": "Belanja Utilitas", "sheet_contains": None},
     {"any": ["konsumsi"], "category": "Konsumsi dan Liburan", "sheet_contains": None},
-    {"any": ["belanja tools", "tools", "cutleries"], "category": "Tools dan Equipments", "sheet_contains": None},
+    {"any": ["belanja tools", "tools", "cutleries", "mr diy"], "category": "Tools dan Equipments", "sheet_contains": None},
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
@@ -348,6 +359,15 @@ class Txn:
     def is_transfer(self):
         k = (self.effective_kategori or "").lower()
         if any(kw in k for kw in TRANSFER_KEYWORDS):
+            return True
+        # Subjek DAN Objek SAMA-SAMA alias owner - kemungkinan besar
+        # transfer antar rekening pribadi/bisnis owner sendiri, jadikan
+        # kandidat pencocokan transfer terlepas dari Kategori aslinya
+        # (lihat OWNER_ALIASES) - masih lewat pencocokan nominal+tanggal
+        # normal, bukan otomatis dianggap benar tanpa verifikasi.
+        subjek_k = (self.subjek or "").strip().lower()
+        objek_k = (self.objek or "").strip().lower()
+        if subjek_k in OWNER_ALIASES and objek_k in OWNER_ALIASES:
             return True
         # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
         # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
@@ -2216,6 +2236,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
         "belanja konsumsi": "Konsumsi dan Liburan",
         "pajak daerah": "Pajak dan Administrasi",
         "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
+        "tools": "Tools dan Equipments",
     }
     legacy_renamed_ids = set()
     for t in all_txns:
