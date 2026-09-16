@@ -2051,7 +2051,12 @@ def _cleanup_and_verify_sheet(ws):
        Saldo Kumulatif (D/E/F) - biasanya baris pemisah/artifak kosong,
        BUKAN baris Saldo Awal Bulan (F-nya SELALU terisi) atau baris
        footer (salah satu dari D/E/F selalu terisi) - keduanya aman
-       tidak akan ikut terhapus oleh kriteria ini.
+       tidak akan ikut terhapus oleh kriteria ini. Satu baris kosong
+       pemisah kemudian disisipkan KEMBALI tepat sebelum tiap blok
+       footer (Saldo Awal/Saldo Akhir/Total Debit/Total Kredit) supaya
+       footer tidak menyatu jadi satu tabel data dengan transaksi -
+       kalau menyatu, AutoFilter Excel pada kolom Kategori (kosong di
+       baris footer) akan ikut menyembunyikan footer saat difilter.
     2. Format mata uang yang konsisten untuk kolom D/E/F - kalau ada
        sel bernilai angka tapi formatnya BUKAN format mata uang yang
        dominan dipakai kolom itu (mis. masih "General" karena sempat
@@ -2077,6 +2082,40 @@ def _cleanup_and_verify_sheet(ws):
             rows_to_delete.append(r)
     for r in sorted(rows_to_delete, reverse=True):
         ws.delete_rows(r)
+
+    # 1b. Sisipkan KEMBALI satu baris kosong pemisah sebelum tiap
+    # blok baris footer (Saldo Awal non-Bulan/Total Debit/Total
+    # Kredit/Saldo Akhir) - tanpa jarak ini, footer jadi menyatu
+    # LANGSUNG dengan data transaksi (khususnya kalau baris kosong
+    # pemisah aslinya sempat terhapus di langkah 1 di atas, atau
+    # memang tidak ada dari sumbernya) - AutoFilter Excel yang
+    # diterapkan user pada kolom Kategori (kosong di baris footer)
+    # jadi ikut MENYEMBUNYIKAN footer, karena footer dianggap BAGIAN
+    # dari tabel data yang sama. Berlaku untuk SEMUA kemunculan blok
+    # footer (beberapa sumber menulis footer ini lebih dari sekali di
+    # tengah sheet, bukan cuma di baris paling akhir).
+    def _is_footer_label(r):
+        b = str(ws.cell(row=r, column=2).value or "").strip().lower()
+        c = str(ws.cell(row=r, column=3).value or "").strip().lower()
+        if c == "saldo awal bulan":
+            return False  # baris pembuka, bukan footer
+        return b in ("saldo awal", "saldo akhir") or b.startswith("total debit") or b.startswith("total kredit")
+
+    footer_block_starts = []
+    r = 2
+    while r <= ws.max_row:
+        if _is_footer_label(r):
+            footer_block_starts.append(r)
+            while r <= ws.max_row and _is_footer_label(r):
+                r += 1
+        else:
+            r += 1
+    for r in sorted(footer_block_starts, reverse=True):
+        if r > 2:
+            b_above = ws.cell(row=r - 1, column=2).value
+            c_above = ws.cell(row=r - 1, column=3).value
+            if b_above is not None or c_above is not None:
+                ws.insert_rows(r)
 
     # 2. Format mata uang konsisten (setelah nomor baris stabil pasca hapus)
     fmt_counter = {col: Counter() for col in (4, 5, 6)}
