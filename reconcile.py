@@ -1991,13 +1991,18 @@ def _gaji_rekon_lokal_info(t):
 def _infer_account_name(txns):
     """Tebak nama/kode rekening dari data transaksinya sendiri - ambil
     nilai Subjek/Objek (gabungan) yang PALING SERING muncul, kecuali
-    placeholder ('-') dan nama sheet generik ('Mutasi') yang tidak
-    merepresentasikan rekening apapun. Dipakai untuk file 'Rekon Lokal'
-    berdiri sendiri yang sheet-nya sering dinamai generik ('Mutasi') di
-    KEDUA file - nama sheet TIDAK BISA dipakai sebagai identitas
-    rekening (selain tidak informatif, kalau kedua file kebetulan
-    sheet-nya sama persis, itu bikin identitas keduanya tertukar total
-    di sisi pencocokan/penulisan hasil).
+    placeholder ('-'), nama sheet generik ('Mutasi'), dan 'Tenant Lain'
+    (penanda bot konversi kalau Objek/Subjek genuinely TIDAK DIKETAHUI,
+    BUKAN nama rekening/entitas sungguhan - kalau ikut dihitung, bisa
+    kebetulan jadi nilai PALING SERING muncul di file yang banyak
+    transaksi tak dikenal objeknya, salah menggantikan nama rekening
+    asli yang benar seperti 'BSI-288') - keduanya tidak merepresentasikan
+    rekening apapun. Dipakai untuk file 'Rekon Lokal' berdiri sendiri
+    yang sheet-nya sering dinamai generik ('Mutasi') di KEDUA file -
+    nama sheet TIDAK BISA dipakai sebagai identitas rekening (selain
+    tidak informatif, kalau kedua file kebetulan sheet-nya sama persis,
+    itu bikin identitas keduanya tertukar total di sisi pencocokan/
+    penulisan hasil).
 
     Return None kalau tidak ada kandidat jelas (fallback ke nama sheet
     apa adanya oleh pemanggil)."""
@@ -2005,7 +2010,7 @@ def _infer_account_name(txns):
     for t in txns:
         for v in (t.subjek, t.objek):
             v = (v or "").strip()
-            if v and v.lower() not in ("-", "mutasi"):
+            if v and v.lower() not in ("-", "mutasi", "tenant lain"):
                 counts[v] = counts.get(v, 0) + 1
     if not counts:
         return None
