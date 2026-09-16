@@ -2178,6 +2178,74 @@ def _cleanup_and_verify_sheet(ws):
         ws.cell(row=footer_rows["saldo akhir"], column=6, value=saldo_akhir_value)
 
 
+def run_rekon_bersih(path, output_path):
+    """Fitur satu-file (input 1 file, output 1 file) - BUKAN pencocokan
+    lintas file seperti /rekonlokal (yang butuh 2 file untuk mencari
+    pasangan transfer). Tujuannya murni membersihkan format SATU file
+    rekening:
+    1. Subjek DAN Objek dilengkapi jadi nama lengkap Title Case kalau
+       dikenali dari EMPLOYEE_ALIASES (pegawai+owner) - kalau tidak
+       dikenali, ditulis ALL CAPS supaya jelas belum teridentifikasi
+       (bukan cuma dibiarkan apa adanya).
+    2. Baris yang tidak punya angka sama sekali di Debit/Kredit/Saldo
+       Kumulatif dihapus (baris pemisah/artifak kosong) - kecuali satu
+       baris kosong disisipkan kembali sebagai pemisah sebelum tiap
+       blok footer (Saldo Awal/Saldo Akhir/Total Debit/Total Kredit),
+       supaya AutoFilter Excel tidak ikut menyembunyikan footer.
+    3. Format mata uang kolom Debit/Kredit/Saldo Kumulatif disamakan ke
+       format dominan yang dipakai kolom itu.
+    4. Footer Saldo Awal/Total Debit/Total Kredit/Saldo Akhir dihitung
+       ULANG dari data transaksi sebenarnya dan ditulis sebagai nilai
+       statis (bukan formula).
+    Tidak melakukan pencocokan transfer, tidak mengubah Kategori/
+    Keterangan berdasarkan aturan vendor/Gaji/dst - fitur ini SENGAJA
+    dibatasi cuma pada format+Subjek/Objek sesuai permintaan eksplisit
+    user, bukan rekategorisasi penuh seperti /rekonlokal."""
+    wb = openpyxl.load_workbook(path)
+    sheets = [s for s in wb.sheetnames if _looks_like_account_sheet(wb[s])]
+    if not sheets:
+        raise ValueError(f"File '{path}' tidak punya sheet rekening berformat standar yang dikenali.")
+
+    # Nama vendor/merchant yang SUDAH dikenal benar (dari aturan vendor
+    # /rekonlokal yang sudah ada) - kalau Objek/Subjek cocok (case-
+    # insensitive) salah satu dari ini, ditulis bentuk Title Case yang
+    # benar (BUKAN dipaksa ALL CAPS) - itu sudah "diketahui" dengan
+    # benar, cuma bukan lewat EMPLOYEE_ALIASES (pegawai/owner) tapi
+    # lewat pengenalan vendor.
+    _known_vendor_names = {}  # lower() -> bentuk Title Case yang benar
+    for _name in ("Grab Merchant", "Shopeefood Merchant"):
+        _known_vendor_names[_name.lower()] = _name
+    for _rules_list in (_KAS_BUKU_VENDOR_RULES, _OBJEK_VENDOR_RULES):
+        for _keywords, _ket, _kat, _objek in _rules_list:
+            _known_vendor_names[_ket.lower()] = _ket
+            if _objek:
+                _known_vendor_names[_objek.lower()] = _objek
+
+    n_subjek_objek_dilengkapi = 0
+    for sn in sheets:
+        ws = wb[sn]
+        split_fliptech_combined_rows(ws)
+        txns, _ = read_account_sheet(ws)
+        for t in txns:
+            if t.is_opening:
+                continue
+            for col, val in ((7, t.subjek), (8, t.objek)):
+                v = (val or "").strip()
+                if not v or v == "-":
+                    continue
+                nama_lengkap = EMPLOYEE_ALIASES.get(v.lower()) or _known_vendor_names.get(v.lower())
+                if nama_lengkap and v != nama_lengkap:
+                    ws.cell(row=t.row, column=col, value=nama_lengkap)
+                    n_subjek_objek_dilengkapi += 1
+                elif not nama_lengkap and v != v.upper():
+                    ws.cell(row=t.row, column=col, value=v.upper())
+                    n_subjek_objek_dilengkapi += 1
+        _cleanup_and_verify_sheet(ws)
+
+    wb.save(output_path)
+    return {"n_subjek_objek_dilengkapi": n_subjek_objek_dilengkapi}
+
+
 def run_rekon_lokal(path1, path2, out1, out2):
     """Rekon Lokal - fitur MANUAL ringan: cocokkan HANYA transaksi
     'Transaksi Internal' antar 2 file rekening (bukan rekonsiliasi penuh
