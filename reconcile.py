@@ -361,14 +361,29 @@ class Txn:
         k = (self.effective_kategori or "").lower()
         if any(kw in k for kw in TRANSFER_KEYWORDS):
             return True
+        subjek_k = (self.subjek or "").strip().lower()
+        objek_k = (self.objek or "").strip().lower()
         # Subjek DAN Objek SAMA-SAMA alias owner - kemungkinan besar
         # transfer antar rekening pribadi/bisnis owner sendiri, jadikan
         # kandidat pencocokan transfer terlepas dari Kategori aslinya
         # (lihat OWNER_ALIASES) - masih lewat pencocokan nominal+tanggal
         # normal, bukan otomatis dianggap benar tanpa verifikasi.
-        subjek_k = (self.subjek or "").strip().lower()
-        objek_k = (self.objek or "").strip().lower()
         if subjek_k in OWNER_ALIASES and objek_k in OWNER_ALIASES:
+            return True
+        melibatkan_owner = subjek_k in OWNER_ALIASES or objek_k in OWNER_ALIASES
+        # Modal & Setoran Pemilik yang melibatkan owner (salah satu dari
+        # Subjek/Objek) - JADIKAN kandidat pencocokan transfer juga
+        # (bukan langsung dianggap False seperti Modal biasa dari luar).
+        # User menegaskan: setelah verifikasi manual, banyak transaksi
+        # yang tadinya dikira "Setoran Pemilik" (modal baru masuk dari
+        # luar) ternyata SEBENARNYA transfer internal (owner pindahkan
+        # uang antar rekening miliknya sendiri) - kalau memang ketemu
+        # pasangan valid (nominal+tanggal cocok) di rekening lain, itu
+        # LEBIH DIPERCAYA daripada anggapan awal "Setoran Pemilik".
+        # Kalau TIDAK ketemu pasangan, tetap jatuh ke Modal seperti biasa
+        # (penanganan itu terjadi di proses koreksi /rekonlokal, bukan
+        # di sini - di sini cuma menentukan APAKAH masuk kandidat dulu).
+        if any(kw in k for kw in CAPITAL_KEYWORDS) and melibatkan_owner:
             return True
         # fallback ke keterangan kalau kategori tidak/salah diisi, kecuali
         # sudah eksplisit dikategorikan sebagai modal (setoran dari luar,
@@ -2213,6 +2228,16 @@ def run_rekon_lokal(path1, path2, out1, out2):
             # lawannya tidak ada di file yang dibandingkan pada run kali
             # ini. Bukan genuinely belum direkon - jangan dihighlight
             # merah lagi.
+            continue
+        elif any(kw in (src.kategori or "").lower() for kw in CAPITAL_KEYWORDS):
+            # Kategori ASLI-nya Modal & Setoran Pemilik (jadi kandidat
+            # transfer karena melibatkan owner - lihat Txn.is_transfer),
+            # tapi TIDAK ketemu pasangan valid. Ini BUKAN kegagalan -
+            # "Setoran Pemilik" TETAP kategori yang sah kalau memang
+            # tidak ada transaksi berlawanan (user menegaskan: itu cuma
+            # prioritas KEDUA, dipakai kalau tidak ketemu pasangan
+            # transfer valid). Jangan dihighlight merah - biarkan tetap
+            # Modal & Setoran Pemilik apa adanya.
             continue
         n_belum_rekon += 1
         wb_t, sheet_t = name_to_real[src.sheet]
