@@ -196,7 +196,8 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["seakun.id", "apple", "adobe"], "category": "Subscription", "sheet_contains": None},
     {"any": ["riset", "pelatihan", "training"], "category": "Riset dan Development", "sheet_contains": None},
     {"any": ["plastik"], "category": "Kemasan", "sheet_contains": None},
-    {"any": ["nanda audia agustin"], "category": "Kemasan", "sheet_contains": None},
+    {"any": ["nanda audia agustin", "nanda audia agusti"], "category": "Kemasan", "sheet_contains": None},
+    {"any": ["madam baha", "madam bahan kue", "toko madam"], "category": "Belanja Bahan", "sheet_contains": None},
     {"any": ["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "category": "Kemasan", "sheet_contains": None},
     {"any": ["beli masker", "shopee", "ovo", "gopay", "dana", "top up", "isi saldo", "tarikan atm",
              "ganti uang belanja", "es batu"],
@@ -1849,6 +1850,30 @@ _KAS_BUKU_VENDOR_RULES = [
     (["pembayaran briva ke tokopedia", "tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
 ]
 
+# Vendor yang trigger-nya SPESIFIK dari kolom Objek (bukan Keterangan) -
+# supplier/toko sering muncul di Objek, sementara Keterangan-nya sendiri
+# masih generik ("Belanja Operasional"/"Belanja Bahan") dan tidak
+# menyebut nama vendornya sama sekali. Format sama seperti
+# _KAS_BUKU_VENDOR_RULES (keyword_objek, keterangan_baru, kategori_baru,
+# objek_baru) - keyword dicek pakai batas kata terhadap Objek transaksi.
+_OBJEK_VENDOR_RULES = [
+    (["nanda audia agusti", "nanda audia agustin"], "Kliffer Plastik", "Kemasan", "Kliffer Plastik"),
+    (["madam baha", "madam bahan kue", "toko madam"], "Toko Madam", "Belanja Bahan", "Toko Madam"),
+]
+
+
+def _objek_vendor_info(t):
+    """Sama seperti _kas_buku_vendor_info, tapi mengecek kolom Objek
+    (bukan Keterangan) terhadap _OBJEK_VENDOR_RULES. Return
+    (keterangan_baru, kategori_baru, objek_baru) atau None."""
+    text = (t.objek or "").lower()
+    for keywords, keterangan_baru, kategori_baru, objek_baru in _OBJEK_VENDOR_RULES:
+        for kw in keywords:
+            if re.search(r"\b" + re.escape(kw) + r"\b", text):
+                return keterangan_baru, kategori_baru, objek_baru
+    return None
+
+
 
 def _kas_buku_vendor_info(t):
     """Kalau Keterangan/Objek transaksi ini mengandung salah satu kata
@@ -2373,12 +2398,21 @@ def run_rekon_lokal(path1, path2, out1, out2):
         kat = (t.kategori or "").strip().lower()
         subjek_k = (t.subjek or "").strip().lower()
         objek_k = (t.objek or "").strip().lower()
+        desc_k = (t.desc or "").strip().lower()
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        if kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet":
+        # Selain cek Kategori/Subjek/Objek, JUGA cek Keterangan (B) -
+        # sumber kadang sudah menulis "Penjualan Grabfood"/"Penjualan
+        # Shopeefood" di Keterangan tapi Kategori-nya masih salah cuma
+        # "Penjualan" generik (belum spesifik) - kalau ketemu lewat
+        # Keterangan begini, Kategori JUGA dibetulkan, tidak cuma
+        # Objek/Keterangan Tambahan.
+        if kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet" or "grabfood" in desc_k:
+            ws_t.cell(row=t.row, column=3, value="Penjualan Grabfood")
             ws_t.cell(row=t.row, column=8, value="Grab Merchant")
             ws_t.cell(row=t.row, column=9, value="-")
-        elif kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay":
+        elif kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay" or "shopeefood" in desc_k:
+            ws_t.cell(row=t.row, column=3, value="Penjualan Shopeefood")
             ws_t.cell(row=t.row, column=8, value="Shopeefood Merchant")
             ws_t.cell(row=t.row, column=9, value="-")
         elif kat == "biaya admin bank":
@@ -2469,6 +2503,27 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         if objek_baru is not None:
             ws_t.cell(row=t.row, column=8, value=objek_baru)
+
+    # Vendor yang trigger-nya dari kolom Objek (bukan Keterangan) - lihat
+    # _OBJEK_VENDOR_RULES/_objek_vendor_info.
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        info = _objek_vendor_info(t)
+        if info is None:
+            continue
+        keterangan_baru, kategori_baru, objek_baru = info
+        sudah_benar = (t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru
+                       and (t.objek or "").strip() == objek_baru)
+        if sudah_benar:
+            continue
+        vendor_fixed_ids.add(id(t))
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        ws_t.cell(row=t.row, column=2, value=keterangan_baru)
+        ws_t.cell(row=t.row, column=3, value=kategori_baru)
+        ws_t.cell(row=t.row, column=8, value=objek_baru)
 
     # Kategori mencurigakan - Kategori TERSIMPAN beda dari yang
     # DIHITUNG sistem berdasarkan Keterangan/Objek (effective_kategori,
