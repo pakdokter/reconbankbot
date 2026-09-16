@@ -2345,6 +2345,30 @@ def run_rekon_lokal(path1, path2, out1, out2):
             for c in range(1, 10):
                 ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
 
+    # Keterangan Tambahan (I) untuk transaksi Penjualan/Shopeefood/
+    # Grabfood sering berisi kode referensi teknis mentah dari mesin
+    # EDC/QRIS (timestamp+kode transaksi+Teller ID, atau MID/CBG/QR/DDR)
+    # - tidak menambah informasi berguna begitu transaksinya SENDIRI
+    # sudah benar terklasifikasi sebagai Penjualan. Dibersihkan jadi
+    # "-" KHUSUS untuk transaksi yang Kategori-nya SUDAH salah satu dari
+    # 3 kategori Penjualan ini - tidak menyentuh transaksi lain (baris
+    # yang belum jelas kategorinya, catatan referensi masih penting
+    # untuk audit).
+    _qris_teller_pattern = re.compile(
+        r"^jam \d{2}:\d{2}:\d{2};.*teller/user id:\s*\S+$", re.IGNORECASE)
+    _qris_mid_pattern = re.compile(
+        r"^mid:\s*\d+;\s*cbg:\s*\d+;\s*qr\s*:\s*[\d.]+;\s*ddr:\s*[\d.]+$", re.IGNORECASE)
+    _PENJUALAN_KATEGORI = {"penjualan", "penjualan shopeefood", "penjualan grabfood"}
+    for t in all_txns:
+        if (t.kategori or "").strip().lower() not in _PENJUALAN_KATEGORI:
+            continue
+        ket_text = (t.ket or "").strip()
+        if not ket_text or ket_text == "-":
+            continue
+        if _qris_teller_pattern.match(ket_text) or _qris_mid_pattern.match(ket_text):
+            wb_t, sheet_t = name_to_real[t.sheet]
+            wb_t[sheet_t].cell(row=t.row, column=9, value="-")
+
     # Rename kategori LEGACY (nama lama/pendek) ke nama resmi kontrak
     # kategori terbaru - transformasi yang MEMANG disengaja, konsisten
     # dengan Kategori Layer 1 resmi. HANYA menulis ulang kolom Kategori
