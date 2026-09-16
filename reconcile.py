@@ -117,6 +117,42 @@ OWNER_ALIASES = shared_rules.get("owner_aliases", [
     "owner", "ojan", "kak ojan", "ozan", "pakdok", "roziyan", "ahmad roziyan hidayat",
 ])
 
+# Alias pegawai+owner -> nama lengkap (sumber SAMA dengan quarterly.py,
+# lewat shared_rules.json - dict {alias huruf kecil: "Nama Lengkap"}).
+# Dipakai untuk melengkapi Objek jadi nama lengkap Title Case kalau
+# dikenali (lihat pass "lengkapi nama Objek" di run_rekon_lokal).
+# Default lengkap disertakan (BUKAN dict kosong) supaya tetap berfungsi
+# kalau shared_rules.json kebetulan belum ada/kosong isinya.
+_DEFAULT_EMPLOYEE_ALIASES = {
+    "ahmad roziyan hidayat": "Ahmad Roziyan Hidayat", "ahmad roziyan h.": "Ahmad Roziyan Hidayat",
+    "ahmad roziyan": "Ahmad Roziyan Hidayat", "roziyan hidayat": "Ahmad Roziyan Hidayat",
+    "roziyan": "Ahmad Roziyan Hidayat", "ojan": "Ahmad Roziyan Hidayat",
+    "kak ojan": "Ahmad Roziyan Hidayat", "ozan": "Ahmad Roziyan Hidayat",
+    "pakdok": "Ahmad Roziyan Hidayat", "owner": "Ahmad Roziyan Hidayat",
+    "lusiana valufi n": "Lusiana Valufi N", "lusiana": "Lusiana Valufi N",
+    "upi": "Lusiana Valufi N", "upiw": "Lusiana Valufi N",
+    "alun ayumi fiqha p": "Alun Ayumi Fiqha P", "alun": "Alun Ayumi Fiqha P", "luna": "Alun Ayumi Fiqha P",
+    "baiq sabrina ameli": "Baiq Sabrina Ameli", "sabrina": "Baiq Sabrina Ameli",
+    "amel": "Baiq Sabrina Ameli", "amelia": "Baiq Sabrina Ameli",
+    "viona winda octavia": "Viona Winda Octavia", "viona": "Viona Winda Octavia",
+    "vio": "Viona Winda Octavia", "vivi": "Viona Winda Octavia", "ivi": "Viona Winda Octavia",
+    "ismayanti": "Ismayanti", "maya": "Ismayanti",
+    "adinda nurusshafwa": "Adinda Nurusshafwa", "dinda": "Adinda Nurusshafwa",
+    "baiq widiani rintis sari": "Baiq Widiani Rintis Sari", "baiq widiani rinti": "Baiq Widiani Rintis Sari",
+    "widia": "Baiq Widiani Rintis Sari", "sari": "Baiq Widiani Rintis Sari",
+    "kurnia utami nur": "Kurnia Utami Nur", "kurnia": "Kurnia Utami Nur",
+    "kur": "Kurnia Utami Nur", "puput": "Kurnia Utami Nur",
+    "oriegia shativa mulia": "Oriegia Shativa Mulia", "gia": "Oriegia Shativa Mulia", "origia": "Oriegia Shativa Mulia",
+    "naura lutfia": "Naura Lutfia", "naura": "Naura Lutfia", "ola": "Naura Lutfia",
+    "mila septiana": "Mila Septiana", "mila": "Mila Septiana",
+    "ridiaton rizki": "Ridiaton Rizki", "kik": "Ridiaton Rizki",
+    "royyan paice sangwenang": "Royyan Paice Sangwenang", "royyan": "Royyan Paice Sangwenang",
+    "irma aprianti": "Irma Aprianti", "irma": "Irma Aprianti",
+    "latifatul husna": "Latifatul Husna", "eva": "Latifatul Husna",
+    "panji anjanis pran": "Panji Anjanis Pran", "panji": "Panji Anjanis Pran", "pandji": "Panji Anjanis Pran",
+}
+EMPLOYEE_ALIASES = shared_rules.get("employee_aliases", _DEFAULT_EMPLOYEE_ALIASES) or _DEFAULT_EMPLOYEE_ALIASES
+
 # Deklarasi HUTANG BARU yang masuk lewat transfer bank - kata kunci ini
 # TIDAK mengubah kategori (transaksi "hutang"/"pinjaman" + arah masuk
 # SUDAH otomatis jadi Modal & Setoran Pemilik lewat aturan yang ada di
@@ -2172,6 +2208,29 @@ def run_rekon_lokal(path1, path2, out1, out2):
             name_to_real[akun] = (wb, sn)
 
     matches, _combo_matches = find_matches(all_txns, list(name_to_real.keys()))
+
+    # Lengkapi Objek jadi nama lengkap (Title Case) kalau dikenali dari
+    # EMPLOYEE_ALIASES (pegawai+owner) - kalau TIDAK dikenali, tulis
+    # ALL CAPS supaya jelas kelihatan ini belum teridentifikasi (bukan
+    # cuma dibiarkan apa adanya, yang bisa ambigu antara "sudah diperiksa
+    # dan memang begitu" vs "belum diperiksa"). Dijalankan PALING AWAL di
+    # antara pass-pass koreksi lain (sebelum transfer-matching/vendor/
+    # Gaji/Grab-Shopeefood) - pass-pass itu MENIMPA Objek dengan nilai
+    # spesifik mereka sendiri (nama rekening lawan, nama vendor, dst)
+    # kalau memang berlaku, jadi tidak masalah kalau pass ini sempat
+    # menulis sesuatu di situ dulu.
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        objek_asli = (t.objek or "").strip()
+        if not objek_asli or objek_asli == "-":
+            continue
+        nama_lengkap = EMPLOYEE_ALIASES.get(objek_asli.lower())
+        wb_t, sheet_t = name_to_real[t.sheet]
+        if nama_lengkap:
+            wb_t[sheet_t].cell(row=t.row, column=8, value=nama_lengkap)
+        elif objek_asli != objek_asli.upper():
+            wb_t[sheet_t].cell(row=t.row, column=8, value=objek_asli.upper())
 
     n_high = 0
     n_medium = 0
