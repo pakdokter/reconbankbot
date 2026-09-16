@@ -2299,9 +2299,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
     # Kategori (C) dipastikan "Gaji Bulan Ini" atau "Gaji Accrual"
     # (bulan sebelumnya, dibayar telat/awal bulan) - lihat
     # _gaji_rekon_lokal_info untuk logika penentuan bulan gajinya.
-    _gaji_auto_pattern = re.compile(
-        r"^gaji\s+.+\s+(" + "|".join(m.lower() for m in MONTHS_ID if m) + r")\s+\d{4}$"
-    )
+    gaji_ambiguous_ids = set()
     for t in all_txns:
         info = _gaji_rekon_lokal_info(t)
         if info is None:
@@ -2309,39 +2307,33 @@ def run_rekon_lokal(path1, path2, out1, out2):
         nama_depan, bulan_nama, tahun, is_bulan_ini = info
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        desc_sekarang = (t.desc or "").strip()
-        if not _gaji_auto_pattern.match(desc_sekarang.lower()):
-            # Cuma arsipkan Keterangan LAMA ke Keterangan Tambahan kalau
-            # itu genuinely teks asli dari sumber - kalau desc SEKARANG
-            # sudah berpola "Gaji <apapun> <Bulan> <Tahun>" (artinya baris
-            # ini SUDAH PERNAH diproses /rekonlokal sebelumnya, mungkin
-            # pakai versi kode lama yang masih menandai "(?)"), jangan
-            # arsipkan teks hasil olahan lama itu - biarkan Keterangan
-            # Tambahan apa adanya, tidak perlu menumpuk teks stale.
-            ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
-        elif "(?)" not in nama_depan:
-            # Kasus jalan ulang: desc SEKARANG sudah pola auto (dari run
-            # SEBELUMNYA), TAPI nama depan yang dihitung SEKARANG sudah
-            # tidak ambigu lagi (mis. Objek sudah dilengkapi jadi "Baiq
-            # Sabrina" sejak run terakhir) - Keterangan Tambahan mungkin
-            # masih menyimpan teks "(?)" basi dari run lama, bersihkan
-            # supaya tidak menyesatkan seolah masih ambigu.
-            ket_tambahan_sekarang = str(ws_t.cell(row=t.row, column=9).value or "")
-            if "(?)" in ket_tambahan_sekarang and _gaji_auto_pattern.match(ket_tambahan_sekarang.lower().replace("(?)", "x")):
-                ws_t.cell(row=t.row, column=9, value="-")
-        ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
-        ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
         # Objek diseragamkan jadi Title Case (huruf awal tiap kata
         # kapital, sisanya kecil) - data sumber sering ALL CAPS
         # ("ADINDA NURUSSHAFWA"), tidak enak dibaca dan tidak konsisten
-        # dengan gaya penulisan nama di tempat lain.
+        # dengan gaya penulisan nama di tempat lain. Dilakukan DULU di
+        # sini (sebelum menulis Keterangan Tambahan) supaya "Paid to
+        # <nama>" di bawah memakai nama yang sudah rapi.
         objek_asli = (ws_t.cell(row=t.row, column=8).value or "").strip()
+        objek_title = " ".join(w.capitalize() for w in objek_asli.split()) if objek_asli else objek_asli
         if objek_asli:
-            ws_t.cell(row=t.row, column=8, value=" ".join(w.capitalize() for w in objek_asli.split()))
+            ws_t.cell(row=t.row, column=8, value=objek_title)
+        ws_t.cell(row=t.row, column=2, value=f"Gaji {nama_depan} {bulan_nama} {tahun}")
+        ws_t.cell(row=t.row, column=3, value="Gaji Bulan Ini" if is_bulan_ini else "Gaji Accrual")
+        # Keterangan Tambahan (I) untuk SEMUA transaksi Gaji ditulis
+        # "Paid to <nama lengkap>" (pakai Objek penuh yang sudah Title
+        # Case, BUKAN cuma 2 kata pertama yang dipakai di Keterangan) -
+        # override permintaan eksplisit user, menggantikan pendekatan
+        # arsip Keterangan lama yang dipakai sebelumnya untuk kategori
+        # Gaji secara khusus.
+        ws_t.cell(row=t.row, column=9, value=f"Paid to {objek_title}" if objek_title else "-")
         if "(?)" in nama_depan:
             # Nama depan ambigu (dipakai >1 pegawai, data sumber tidak
             # cukup buat membedakan) - highlight ungu yang sama dengan
             # 'Kategori mencurigakan', sama-sama butuh verifikasi manual.
+            # Dicatat di gaji_ambiguous_ids supaya pass "Kategori
+            # mencurigakan" di bawah TIDAK menganggap ungu ini "stale"
+            # dan menghapusnya lagi - ini ungu SEGAR dari run ini juga.
+            gaji_ambiguous_ids.add(id(t))
             for c in range(1, 10):
                 ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
 
@@ -2368,6 +2360,29 @@ def run_rekon_lokal(path1, path2, out1, out2):
         if _qris_teller_pattern.match(ket_text) or _qris_mid_pattern.match(ket_text):
             wb_t, sheet_t = name_to_real[t.sheet]
             wb_t[sheet_t].cell(row=t.row, column=9, value="-")
+
+    # Payment gateway settlement (Grabfood via Visionet, Shopeefood via
+    # Airpay International) - Objek diseragamkan jadi nama merchant
+    # yang jelas (bukan nama payment gateway teknis), dan Keterangan
+    # Tambahan dikosongkan (tidak ada info tambahan yang perlu
+    # dipertahankan untuk settlement rutin seperti ini). Juga berlaku
+    # untuk 'Biaya Admin Bank' - Keterangan Tambahan-nya dikosongkan
+    # tanpa syarat pola tertentu (lebih luas dari pembersihan QRIS di
+    # atas yang cuma untuk pola spesifik).
+    for t in all_txns:
+        kat = (t.kategori or "").strip().lower()
+        subjek_k = (t.subjek or "").strip().lower()
+        objek_k = (t.objek or "").strip().lower()
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        if kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet":
+            ws_t.cell(row=t.row, column=8, value="Grab Merchant")
+            ws_t.cell(row=t.row, column=9, value="-")
+        elif kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay":
+            ws_t.cell(row=t.row, column=8, value="Shopeefood Merchant")
+            ws_t.cell(row=t.row, column=9, value="-")
+        elif kat == "biaya admin bank":
+            ws_t.cell(row=t.row, column=9, value="-")
 
     # Rename kategori LEGACY (nama lama/pendek) ke nama resmi kontrak
     # kategori terbaru - transformasi yang MEMANG disengaja, konsisten
@@ -2488,7 +2503,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
             # ini dengan benar kalau memang termasuk salah satu grup.
             cell_b = ws_t.cell(row=t.row, column=2)
             current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
-            if current_fill == "00D9C6F2":
+            if current_fill == "00D9C6F2" and id(t) not in gaji_ambiguous_ids:
                 for c in range(1, 10):
                     ws_t.cell(row=t.row, column=c).fill = PatternFill(fill_type=None)
             continue
