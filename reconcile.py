@@ -216,7 +216,8 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     # Belanja Utilitas/Overhead yang lebih generik, karena kata kunci di
     # sini (Kabel/Listrik, dst) sering tumpang tindih dengan utilitas
     # umum - urutan menang duluan penting.
-    {"any": ["sewa bangunan", "renovasi bangunan", "biaya tukang", "ongkos tukang", "bahan bangunan",
+    {"any": ["sewa bangunan", "renovasi bangunan", "biaya tukang", "ongkos tukang", "bayar tukang",
+             "bahan bangunan",
              "renovasi kabel", "kabel", "lampu", "toren", "besi", "keramik", "pipa", "westafel",
              "wc", "keran", "depo bangunan", "mitra 10", "toko bangunan"],
      "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
@@ -256,6 +257,8 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"kategori_asli": "reparasi dan maintenance", "category": "Reparasi dan Maintenance Tools dan Mesin", "sheet_contains": None},
     {"kategori_asli": "reparasi", "category": "Reparasi dan Maintenance Tools dan Mesin", "sheet_contains": None},
     {"kategori_asli": "pajak daerah", "category": "Pajak dan Administrasi", "sheet_contains": None},
+    {"kategori_asli": "biaya administrasi", "category": "Pajak dan Administrasi", "sheet_contains": None},
+    {"kategori_asli": "administrasi", "category": "Pajak dan Administrasi", "sheet_contains": None},
     {"kategori_asli": "biaya renovasi atap", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
@@ -2253,6 +2256,8 @@ _LEGACY_KATEGORI_RENAME = {
     "reparasi dan maintenance": "Reparasi dan Maintenance Tools dan Mesin",
     "belanja konsumsi": "Konsumsi dan Liburan",
     "pajak daerah": "Pajak dan Administrasi",
+    "biaya administrasi": "Pajak dan Administrasi",
+    "administrasi": "Pajak dan Administrasi",
     "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
     "tools": "Tools dan Equipments",
 }
@@ -2336,9 +2341,41 @@ def run_rekon_bersih(path, output_path):
             # baru cocokkan fuzzy berbasis kata kalau belum ketemu di situ.
             kategori_asli = (t.kategori or "").strip()
             target = _LEGACY_KATEGORI_RENAME.get(kategori_asli.lower()) or _find_closest_official_category(kategori_asli)
+            if not target and kategori_asli and not _is_recognized_category(kategori_asli):
+                # Kategori aslinya genuinely tidak dikenal ("New
+                # Kategori"/dst) DAN tidak cocok legacy-rename/fuzzy -
+                # coba effective_kategori (aturan kata kunci berbasis
+                # Keterangan/Objek/Subjek, BUKAN cuma teks Kategori itu
+                # sendiri) - menangkap kasus seperti "Biaya Reparasi
+                # (Bayar Tukang)" yang kata kuncinya ada di Keterangan,
+                # bukan di kolom Kategori yang masih generik.
+                hitung = t.effective_kategori
+                if hitung and hitung != "Kategori Baru":
+                    target = hitung
             if target and target != kategori_asli:
                 ws.cell(row=t.row, column=3, value=target)
                 n_kategori_dilengkapi += 1
+            # Highlight warna kelompok kategori - DISEGARKAN ulang sesuai
+            # Kategori TERKINI (setelah kemungkinan dikoreksi di atas),
+            # supaya kalau file ini sebelumnya sempat diwarnai versi
+            # lama/salah (mis. dari /rekonlokal versi lama, atau
+            # kategori yang baru saja dikoreksi barusan), warnanya ikut
+            # diperbarui - bukan cuma dibiarkan warna basi yang sudah
+            # tidak sesuai Kategori sekarang. Warna highlight yang
+            # PUNYA ARTI KHUSUS (merah/ungu/biru/orange/kuning dari
+            # /rekonlokal) TETAP dihormati/tidak ditimpa - fitur ini
+            # tidak melakukan pencocokan transfer sendiri, jadi kalau
+            # ada highlight seperti itu, itu peninggalan proses lain
+            # yang lebih spesifik dan harus tetap terlihat.
+            cell_b = ws.cell(row=t.row, column=2)
+            current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
+            if current_fill not in _MEANINGFUL_HIGHLIGHT_HEXES:
+                kategori_sekarang = ws.cell(row=t.row, column=3).value
+                fill = category_group_fill(kategori_sekarang)
+                target_fill_rgb = fill.fgColor.rgb if fill else None
+                if fill is not None and current_fill != target_fill_rgb:
+                    for c in range(1, 10):
+                        ws.cell(row=t.row, column=c).fill = fill
         _cleanup_and_verify_sheet(ws)
 
     wb.save(output_path)
