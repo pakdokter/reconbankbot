@@ -24,6 +24,7 @@ mungkin direpresentasikan sebagai rumus (contoh: catatan naratif audit).
 
 import re
 import copy
+from collections import Counter
 import shared_rules
 import datetime
 import openpyxl
@@ -1967,6 +1968,101 @@ def _find_style_reference_row(ws, row):
     return None
 
 
+def _cleanup_and_verify_sheet(ws):
+    """3 pembersihan akhir untuk SATU sheet rekening sebelum file
+    /rekonlokal disimpan:
+    1. Hapus baris yang TIDAK PUNYA ANGKA sama sekali di Debit/Kredit/
+       Saldo Kumulatif (D/E/F) - biasanya baris pemisah/artifak kosong,
+       BUKAN baris Saldo Awal Bulan (F-nya SELALU terisi) atau baris
+       footer (salah satu dari D/E/F selalu terisi) - keduanya aman
+       tidak akan ikut terhapus oleh kriteria ini.
+    2. Format mata uang yang konsisten untuk kolom D/E/F - kalau ada
+       sel bernilai angka tapi formatnya BUKAN format mata uang yang
+       dominan dipakai kolom itu (mis. masih "General" karena sempat
+       diedit manual), disamakan.
+    3. Baris footer Saldo Awal/Total Debit/Total Kredit/Saldo Akhir
+       (dikenali dari teks di kolom B) dihitung ULANG dari data
+       transaksi yang SEBENARNYA (bukan dipercaya apa adanya - baris
+       bisa saja sudah disisipkan/dihapus oleh proses /rekonlokal) dan
+       ditulis sebagai NILAI STATIS (bukan formula) - supaya tetap jadi
+       acuan tetap untuk verifikasi manual, tidak ikut berubah kalau
+       user mengedit sel lain di dekatnya."""
+    header = [ws.cell(row=1, column=c).value for c in range(1, 9)]
+    if header != _STANDARD_HEADER:
+        return  # bukan sheet rekening berformat standar, jangan diapa-apakan
+
+    # 1. Hapus baris tanpa angka sama sekali di D/E/F
+    rows_to_delete = []
+    for r in range(2, ws.max_row + 1):
+        d = ws.cell(row=r, column=4).value
+        e = ws.cell(row=r, column=5).value
+        f = ws.cell(row=r, column=6).value
+        if d is None and e is None and f is None:
+            rows_to_delete.append(r)
+    for r in sorted(rows_to_delete, reverse=True):
+        ws.delete_rows(r)
+
+    # 2. Format mata uang konsisten (setelah nomor baris stabil pasca hapus)
+    fmt_counter = {col: Counter() for col in (4, 5, 6)}
+    for r in range(2, ws.max_row + 1):
+        for col in (4, 5, 6):
+            cell = ws.cell(row=r, column=col)
+            if isinstance(cell.value, (int, float)):
+                fmt_counter[col][cell.number_format] += 1
+    dominant_fmt = {col: c.most_common(1)[0][0] for col, c in fmt_counter.items() if c}
+    for r in range(2, ws.max_row + 1):
+        for col in (4, 5, 6):
+            cell = ws.cell(row=r, column=col)
+            if (isinstance(cell.value, (int, float)) and col in dominant_fmt
+                    and cell.number_format != dominant_fmt[col]):
+                cell.number_format = dominant_fmt[col]
+
+    # 3. Cari Saldo Awal Bulan + baris footer, hitung ulang dari transaksi asli
+    saldo_awal_value = 0.0
+    footer_rows = {}
+    total_debit = 0.0
+    total_kredit = 0.0
+    for r in range(2, ws.max_row + 1):
+        b_lower = str(ws.cell(row=r, column=2).value or "").strip().lower()
+        c_lower = str(ws.cell(row=r, column=3).value or "").strip().lower()
+        d = ws.cell(row=r, column=4).value
+        e = ws.cell(row=r, column=5).value
+        f = ws.cell(row=r, column=6).value
+
+        if c_lower == "saldo awal bulan":
+            if isinstance(f, (int, float)):
+                saldo_awal_value = f
+            continue
+        if b_lower == "saldo awal":
+            footer_rows["saldo awal"] = r
+            continue
+        if b_lower.startswith("total debit"):
+            footer_rows["total debit"] = r
+            continue
+        if b_lower.startswith("total kredit"):
+            footer_rows["total kredit"] = r
+            continue
+        if b_lower == "saldo akhir":
+            footer_rows["saldo akhir"] = r
+            continue
+
+        if isinstance(d, (int, float)):
+            total_debit += d
+        if isinstance(e, (int, float)):
+            total_kredit += e
+
+    saldo_akhir_value = saldo_awal_value + total_debit + total_kredit
+
+    if "saldo awal" in footer_rows:
+        ws.cell(row=footer_rows["saldo awal"], column=6, value=saldo_awal_value)
+    if "total debit" in footer_rows:
+        ws.cell(row=footer_rows["total debit"], column=4, value=total_debit)
+    if "total kredit" in footer_rows:
+        ws.cell(row=footer_rows["total kredit"], column=5, value=total_kredit)
+    if "saldo akhir" in footer_rows:
+        ws.cell(row=footer_rows["saldo akhir"], column=6, value=saldo_akhir_value)
+
+
 def run_rekon_lokal(path1, path2, out1, out2):
     """Rekon Lokal - fitur MANUAL ringan: cocokkan HANYA transaksi
     'Transaksi Internal' antar 2 file rekening (bukan rekonsiliasi penuh
@@ -2372,6 +2468,16 @@ def run_rekon_lokal(path1, path2, out1, out2):
             continue
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = fill
+
+    # Pembersihan akhir per sheet - hapus baris tanpa angka, samakan
+    # format mata uang, hitung ulang & patenkan (nilai statis, bukan
+    # formula) Saldo Awal/Total Debit/Total Kredit/Saldo Akhir sebagai
+    # acuan tetap untuk verifikasi manual user. Dijalankan PALING AKHIR,
+    # setelah semua koreksi lain selesai (row number sudah final).
+    for sn in sheets1:
+        _cleanup_and_verify_sheet(wb1[sn])
+    for sn in sheets2:
+        _cleanup_and_verify_sheet(wb2[sn])
 
     wb1.save(out1)
     wb2.save(out2)
