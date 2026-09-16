@@ -2178,6 +2178,81 @@ def _cleanup_and_verify_sheet(ws):
         ws.cell(row=footer_rows["saldo akhir"], column=6, value=saldo_akhir_value)
 
 
+_OFFICIAL_LAYER1_CATEGORIES = [
+    "Penjualan", "Penjualan Shopeefood", "Penjualan Grabfood",
+    "Belanja Bahan", "Overhead", "Konsumsi dan Liburan", "Belanja Utilitas",
+    "Tools dan Equipments", "Kemasan", "Subscription",
+    "Sewa dan Maintenance Bangunan", "Reparasi dan Maintenance Tools dan Mesin",
+    "Pajak dan Administrasi", "Belanja Assets", "Marketing",
+    "Riset dan Development", "Biaya Admin Bank", "Tip/Minus/Lebih",
+    "Hutang Masuk", "Pembayaran Hutang", "Pengeluaran Pribadi",
+    "Modal & Setoran Pemilik", "Transaksi Internal",
+]
+_KATEGORI_STOPWORDS = {"dan", "&"}
+
+
+def _find_closest_official_category(kategori_asli):
+    """Kalau kategori_asli adalah versi TERPOTONG/tidak lengkap dari
+    salah satu kategori resmi (semua kata yang ADA cocok, tinggal ada
+    kata yang HILANG - mis. 'Reparasi Mesin'/'Reparasi Tools' vs
+    'Reparasi dan Maintenance Tools dan Mesin'), kembalikan nama
+    LENGKAP resmi. None kalau kategori_asli SUDAH persis salah satu
+    kategori resmi, atau tidak ada kecocokan yang cukup jelas/spesifik
+    (supaya tidak salah tangkap - kata umum sendirian seperti 'belanja'
+    BUKAN sinyal cukup kuat, minimal 2 kata cocok, atau 1 kata yang
+    sudah cukup panjang/spesifik)."""
+    k = (kategori_asli or "").strip().lower()
+    if not k:
+        return None
+    for official in _OFFICIAL_LAYER1_CATEGORIES:
+        if k == official.lower():
+            return None  # sudah persis benar
+    k_words = set(k.split()) - _KATEGORI_STOPWORDS
+    if not k_words:
+        return None
+    candidates = []
+    for official in _OFFICIAL_LAYER1_CATEGORIES:
+        official_words = set(official.lower().split()) - _KATEGORI_STOPWORDS
+        if k_words <= official_words:
+            candidates.append((len(k_words), len(official_words), official))
+    if not candidates:
+        return None
+    # menangkan kandidat dengan PALING SEDIKIT kata (interpretasi paling
+    # sederhana/langsung) kalau beberapa kategori resmi sama-sama cocok
+    # dengan skor kata yang sama (mis. kata "tools" sendirian muncul di
+    # "Tools dan Equipments" MAUPUN "Reparasi dan Maintenance Tools dan
+    # Mesin").
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    score, _, best = candidates[0]
+    if score >= 2:
+        return best
+    if score == 1:
+        # untuk kecocokan SATU kata saja, pastikan kata itu tidak
+        # sekadar prefiks generik yang dipakai BANYAK kategori resmi
+        # sekaligus (mis. "belanja" muncul di "Belanja Bahan"/"Belanja
+        # Assets"/"Belanja Utilitas") - kalau begitu genuinely ambigu,
+        # jangan menebak salah satu meski katanya cukup panjang.
+        satu_kata = next(iter(k_words))
+        n_kategori_mengandung = sum(
+            1 for official in _OFFICIAL_LAYER1_CATEGORIES
+            if satu_kata in (set(official.lower().split()) - _KATEGORI_STOPWORDS)
+        )
+        if n_kategori_mengandung == 1 and len(satu_kata) >= 5:
+            return best
+    return None
+
+
+_LEGACY_KATEGORI_RENAME = {
+    "belanja operasional": "Overhead",
+    "reparasi": "Reparasi dan Maintenance Tools dan Mesin",
+    "reparasi dan maintenance": "Reparasi dan Maintenance Tools dan Mesin",
+    "belanja konsumsi": "Konsumsi dan Liburan",
+    "pajak daerah": "Pajak dan Administrasi",
+    "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
+    "tools": "Tools dan Equipments",
+}
+
+
 def run_rekon_bersih(path, output_path):
     """Fitur satu-file (input 1 file, output 1 file) - BUKAN pencocokan
     lintas file seperti /rekonlokal (yang butuh 2 file untuk mencari
@@ -2197,10 +2272,17 @@ def run_rekon_bersih(path, output_path):
     4. Footer Saldo Awal/Total Debit/Total Kredit/Saldo Akhir dihitung
        ULANG dari data transaksi sebenarnya dan ditulis sebagai nilai
        statis (bukan formula).
-    Tidak melakukan pencocokan transfer, tidak mengubah Kategori/
-    Keterangan berdasarkan aturan vendor/Gaji/dst - fitur ini SENGAJA
-    dibatasi cuma pada format+Subjek/Objek sesuai permintaan eksplisit
-    user, bukan rekategorisasi penuh seperti /rekonlokal."""
+    5. Kategori yang TERPOTONG/tidak lengkap (typo/singkatan dari salah
+       satu kategori resmi Layer 1, mis. "Reparasi Mesin"/"Reparasi
+       Tools" -> "Reparasi dan Maintenance Tools dan Mesin") dilengkapi
+       jadi nama resmi lengkap - lihat _LEGACY_KATEGORI_RENAME (kasus
+       yang sudah diketahui pasti) dan _find_closest_official_category
+       (pencocokan fuzzy berbasis kata untuk kasus lain, HANYA kalau
+       cukup spesifik/tidak ambigu dengan kategori resmi lain).
+    Tidak melakukan pencocokan transfer - fitur ini SENGAJA dibatasi
+    cuma pada format+Subjek/Objek+Kategori sesuai permintaan eksplisit
+    user, bukan rekategorisasi penuh berbasis kata kunci Keterangan
+    seperti /rekonlokal."""
     wb = openpyxl.load_workbook(path)
     sheets = [s for s in wb.sheetnames if _looks_like_account_sheet(wb[s])]
     if not sheets:
@@ -2222,6 +2304,7 @@ def run_rekon_bersih(path, output_path):
                 _known_vendor_names[_objek.lower()] = _objek
 
     n_subjek_objek_dilengkapi = 0
+    n_kategori_dilengkapi = 0
     for sn in sheets:
         ws = wb[sn]
         split_fliptech_combined_rows(ws)
@@ -2240,10 +2323,21 @@ def run_rekon_bersih(path, output_path):
                 elif not nama_lengkap and v != v.upper():
                     ws.cell(row=t.row, column=col, value=v.upper())
                     n_subjek_objek_dilengkapi += 1
+            # Kategori yang TERPOTONG/tidak lengkap (typo/singkatan dari
+            # salah satu kategori resmi, mis. "Reparasi Mesin"/"Reparasi
+            # Tools" -> "Reparasi dan Maintenance Tools dan Mesin")
+            # dilengkapi jadi nama resmi lengkap - dicek dulu daftar
+            # legacy yang SUDAH DIKETAHUI PASTI (_LEGACY_KATEGORI_RENAME),
+            # baru cocokkan fuzzy berbasis kata kalau belum ketemu di situ.
+            kategori_asli = (t.kategori or "").strip()
+            target = _LEGACY_KATEGORI_RENAME.get(kategori_asli.lower()) or _find_closest_official_category(kategori_asli)
+            if target and target != kategori_asli:
+                ws.cell(row=t.row, column=3, value=target)
+                n_kategori_dilengkapi += 1
         _cleanup_and_verify_sheet(ws)
 
     wb.save(output_path)
-    return {"n_subjek_objek_dilengkapi": n_subjek_objek_dilengkapi}
+    return {"n_subjek_objek_dilengkapi": n_subjek_objek_dilengkapi, "n_kategori_dilengkapi": n_kategori_dilengkapi}
 
 
 def run_rekon_lokal(path1, path2, out1, out2):
@@ -2589,21 +2683,12 @@ def run_rekon_lokal(path1, path2, out1, out2):
     # dengan Kategori Layer 1 resmi. HANYA menulis ulang kolom Kategori
     # (C) - Keterangan (B) dibiarkan apa adanya (sudah cukup deskriptif,
     # cuma label Kategori-nya yang ketinggalan zaman).
-    _legacy_kategori_rename = {
-        "belanja operasional": "Overhead",
-        "reparasi": "Reparasi dan Maintenance Tools dan Mesin",
-        "reparasi dan maintenance": "Reparasi dan Maintenance Tools dan Mesin",
-        "belanja konsumsi": "Konsumsi dan Liburan",
-        "pajak daerah": "Pajak dan Administrasi",
-        "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
-        "tools": "Tools dan Equipments",
-    }
     legacy_renamed_ids = set()
     for t in all_txns:
         if t.is_opening:
             continue
         asli = (t.kategori or "").strip().lower()
-        target = _legacy_kategori_rename.get(asli)
+        target = _LEGACY_KATEGORI_RENAME.get(asli)
         if target is None or target == (t.kategori or "").strip():
             continue
         legacy_renamed_ids.add(id(t))
