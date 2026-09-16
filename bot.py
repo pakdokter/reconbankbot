@@ -47,7 +47,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import Conflict, NetworkError
 
-from reconcile import run_reconciliation, run_rekon_lokal
+from reconcile import run_reconciliation, run_rekon_lokal, run_rekon_bersih
 import reconcile as rc
 from quarterly import run_quarterly_report, QuarterlyInputError, add_roster_to_monthly_report, check_continuity_between_months
 from kasir_audit import run_kasir_audit, parse_pos_sales, KasirAuditError, _looks_like_account_sheet, looks_like_interpretasi_file
@@ -160,6 +160,7 @@ Upload file .xlsx — proses rekonsiliasi bulanan langsung (tanpa command). Lapo
 *Audit tambahan*
 /kontinuitas — bandingkan Saldo Akhir file bulan lalu dengan Saldo Awal file bulan ini (deteksi selisih di batas antar bulan). Upload 2 file berurutan setelah command ini.
 /rekonlokal — cocokkan HANYA transaksi Transaksi Internal antar 2 file rekening (bukan rekonsiliasi penuh). Output 2 file dengan Subjek/Objek transfer yang matched dikoreksi, selebihnya apa adanya.
+/rekonbersih — input 1 file rekening, output 1 file yang sama tapi format lebih bersih: tidak ada baris kosong, Subjek/Objek dilengkapi jadi nama lengkap (dikenali) atau ALL CAPS (tidak dikenali). Bukan pencocokan lintas file.
 /auditkasir — audit silang mesin kasir (POS) vs rekap keuangan, termasuk asumsi settlement QRIS/kartu H+1 (atau tanggal settle eksplisit kalau pakai file Interpretasi Penjualan). Upload file penjualan (Detail Penjualan POS atau Interpretasi Penjualan) + Rekap (urutan bebas, jenis dideteksi otomatis), lalu /selesai.
 
 *Kelola kategori & alias pegawai (butuh Postgres tersambung)*
@@ -270,6 +271,46 @@ async def _process_and_reply(update, input_path, with_statements):
                 filename=final_filename,
                 caption=build_caption(summary),
             )
+
+
+async def rekonbersih_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fitur satu-file - input 1 file, output 1 file (BUKAN pencocokan
+    lintas file seperti /rekonlokal). Membersihkan format: hapus baris
+    kosong, samakan format mata uang, hitung ulang footer, dan lengkapi
+    Subjek/Objek jadi nama lengkap Title Case (kalau dikenali) atau ALL
+    CAPS (kalau tidak)."""
+    context.user_data["rekonbersih_mode"] = True
+    await update.message.reply_text(
+        "Mode Rekon Bersih aktif. Upload 1 file rekening (format standar 9 kolom).\n\n"
+        "Kirim /batal kalau mau keluar dari mode ini."
+    )
+
+
+async def handle_rekonbersih_document(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    user_id = update.effective_user.id
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"rekonbersih_{user_id}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    dest = os.path.join(tmp_dir, doc.file_name)
+    tg_file = await doc.get_file()
+    await tg_file.download_to_drive(dest)
+
+    status_msg = await update.message.reply_text("Membersihkan file, tunggu sebentar...")
+    out_dir = os.path.join(tmp_dir, "out")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, doc.file_name)
+    try:
+        run_rekon_bersih(dest, out_path)
+    except Exception as e:
+        logger.exception("Gagal menjalankan rekon bersih")
+        await status_msg.edit_text(f"Gagal: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        context.user_data["rekonbersih_mode"] = False
+        return
+    context.user_data["rekonbersih_mode"] = False
+    await status_msg.delete()
+    with open(out_path, "rb") as f:
+        await update.message.reply_document(document=f, filename=doc.file_name)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def rekonlokal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -522,6 +563,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_auditkasir_document(update, context, doc)
         return
 
+    if context.user_data.get("rekonbersih_mode"):
+        await handle_rekonbersih_document(update, context, doc)
+        return
+
     if context.user_data.get("rekonlokal_mode"):
         await handle_rekonlokal_document(update, context, doc)
         return
@@ -601,6 +646,10 @@ async def tahunan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def batal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("rekonbersih_mode"):
+        context.user_data["rekonbersih_mode"] = False
+        await update.message.reply_text("Mode Rekon Bersih dibatalkan.")
+        return
     if context.user_data.get("rekonlokal_mode"):
         context.user_data["rekonlokal_mode"] = False
         context.user_data["rekonlokal_files"] = []
@@ -950,6 +999,7 @@ def main():
     app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
     app.add_handler(CommandHandler("kontinuitas", kontinuitas_command))
     app.add_handler(CommandHandler("rekonlokal", rekonlokal_command))
+    app.add_handler(CommandHandler("rekonbersih", rekonbersih_command))
     app.add_handler(CommandHandler("auditkasir", auditkasir_command))
     app.add_handler(CommandHandler("cmd", cmd_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
