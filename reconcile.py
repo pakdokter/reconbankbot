@@ -2667,14 +2667,31 @@ def run_rekon_lokal(path1, path2, out1, out2):
         # "Penjualan" generik (belum spesifik) - kalau ketemu lewat
         # Keterangan begini, Kategori JUGA dibetulkan, tidak cuma
         # Objek/Keterangan Tambahan.
+        #
+        # Arah Subjek/Objek untuk transaksi Penjualan: uang MENGALIR
+        # DARI merchant/pembeli KE rekening penerima - jadi Subjek =
+        # sumber uang (merchant), Objek = rekening tujuan (rekening
+        # bank ini sendiri, t.sheet) - BUKAN sebaliknya seperti versi
+        # lama (Subjek dibiarkan apa adanya, Objek ditulis nama
+        # merchant, yang justru menggambarkan arah TERBALIK).
         if kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet" or "grabfood" in desc_k:
             ws_t.cell(row=t.row, column=3, value="Penjualan Grabfood")
-            ws_t.cell(row=t.row, column=8, value="Grab Merchant")
+            ws_t.cell(row=t.row, column=7, value="Grab Merchant")
+            ws_t.cell(row=t.row, column=8, value=t.sheet)
             ws_t.cell(row=t.row, column=9, value="-")
         elif kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay" or "shopeefood" in desc_k:
             ws_t.cell(row=t.row, column=3, value="Penjualan Shopeefood")
-            ws_t.cell(row=t.row, column=8, value="Shopeefood Merchant")
+            ws_t.cell(row=t.row, column=7, value="Shopeefood Merchant")
+            ws_t.cell(row=t.row, column=8, value=t.sheet)
             ws_t.cell(row=t.row, column=9, value="-")
+        elif kat == "penjualan" and t.sheet.strip().lower().startswith("kas"):
+            # Penjualan yang tercatat DI buku kas sendiri (bukan
+            # settlement payment gateway seperti Grabfood/Shopeefood) -
+            # ini penjualan CASH langsung, uangnya mengalir dari
+            # penjualan tunai KE kas - Subjek = "Penjualan Cash", Objek
+            # = buku kas ini sendiri (t.sheet, mis. "Kas/Buku").
+            ws_t.cell(row=t.row, column=7, value="Penjualan Cash")
+            ws_t.cell(row=t.row, column=8, value=t.sheet)
         elif kat == "biaya admin bank":
             ws_t.cell(row=t.row, column=9, value="-")
 
