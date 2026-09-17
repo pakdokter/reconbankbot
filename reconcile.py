@@ -2886,6 +2886,33 @@ def run_rekon_lokal(path1, path2, out1, out2):
     # AKTIF dikoreksi di pass _legacy_kategori_rename di atas (lihat
     # legacy_renamed_ids), bukan kesalahan kategorisasi genuine yang
     # perlu ditandai untuk audit manual lagi.
+    #
+    # Kasus KHUSUS: kalau Kategori ASLI-nya literal "New Kategori"/
+    # "Kategori Baru" (placeholder GENERIK "belum diketahui", bukan
+    # kategori spesifik yang salah) DAN sistem SUDAH bisa menentukan
+    # kategori spesifik dengan yakin dari Keterangan/Objek/Subjek
+    # (effective_kategori bukan lagi 'Kategori Baru') - AKTIF dikoreksi
+    # juga, BUKAN cuma diflag ungu. Beda dari kasus Kategori SPESIFIK
+    # yang salah (mis. Kategori sudah 'Overhead' tapi harusnya
+    # 'Reparasi dan Maintenance Tools dan Mesin' - itu tetap cuma
+    # diflag, karena ada KEMUNGKINAN kategori spesifik yang tersimpan
+    # itu sengaja/benar dan aturan kata kunci-lah yang salah tangkap -
+    # sedangkan "New Kategori" jelas-jelas "belum diketahui", tidak ada
+    # nilai tersimpan yang perlu dipertahankan.
+    new_kategori_fixed_ids = set()
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        asli = (t.kategori or "").strip().lower()
+        if asli not in ("new kategori", "kategori baru"):
+            continue
+        hitung = t.effective_kategori
+        if not hitung or hitung.strip().lower() == "kategori baru":
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        wb_t[sheet_t].cell(row=t.row, column=3, value=hitung)
+        new_kategori_fixed_ids.add(id(t))
+
     n_kategori_mencurigakan = 0
     for t in all_txns:
         if t.is_opening:
@@ -2901,7 +2928,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
         # akan pernah terhapus untuk baris yang SEKARANG sudah aktif
         # dikoreksi.
         sudah_dikoreksi_aktif = (id(t) in vendor_fixed_ids or id(t) in legacy_renamed_ids
-                                  or id(t) in penjualan_fixed_ids)
+                                  or id(t) in penjualan_fixed_ids or id(t) in new_kategori_fixed_ids)
         asli = (t.kategori or "").strip().lower()
         hitung = (t.effective_kategori or "").strip().lower()
         if sudah_dikoreksi_aktif or not asli or asli == hitung or hitung == "kategori baru":
