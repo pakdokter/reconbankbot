@@ -1899,6 +1899,7 @@ _KAS_BUKU_VENDOR_RULES = [
 _OBJEK_VENDOR_RULES = [
     (["nanda audia agusti", "nanda audia agustin"], "Kliffer Plastik", "Kemasan", "Kliffer Plastik"),
     (["madam baha", "madam bahan kue", "toko madam"], "Toko Madam", "Belanja Bahan", "Toko Madam"),
+    (["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "Anugerah Plastik", "Kemasan", "Anugerah Plastik"),
 ]
 
 
@@ -2666,6 +2667,20 @@ def run_rekon_lokal(path1, path2, out1, out2):
             for c in range(1, 10):
                 ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
 
+    # Pembayaran Hutang - Keterangan Tambahan (I) ditulis "Paid to
+    # <penerima>" (pakai Objek, Title Case) - sama pola dengan Gaji di
+    # atas, cuma untuk kategori Pembayaran Hutang.
+    for t in all_txns:
+        if (t.effective_kategori or "").strip().lower() != "pembayaran hutang":
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        objek_asli = (ws_t.cell(row=t.row, column=8).value or "").strip()
+        objek_title = " ".join(w.capitalize() for w in objek_asli.split()) if objek_asli else objek_asli
+        if objek_asli:
+            ws_t.cell(row=t.row, column=8, value=objek_title)
+        ws_t.cell(row=t.row, column=9, value=f"Paid to {objek_title}" if objek_title else "-")
+
     # Keterangan Tambahan (I) untuk transaksi Penjualan/Shopeefood/
     # Grabfood sering berisi kode referensi teknis mentah dari mesin
     # EDC/QRIS (timestamp+kode transaksi+Teller ID, atau MID/CBG/QR/DDR)
@@ -2824,7 +2839,12 @@ def run_rekon_lokal(path1, path2, out1, out2):
         vendor_fixed_ids.add(id(t))
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        # Vendor sudah "confirmed" (dikenali pasti dari daftar), tidak
+        # ada info tambahan yang perlu dipertahankan - Keterangan
+        # Tambahan dikosongkan langsung (BUKAN diarsip, beda dari pass
+        # koreksi Kategori/Objek biasa yang masih mengarsip Keterangan
+        # lama karena statusnya belum tentu confirmed).
+        ws_t.cell(row=t.row, column=9, value="-")
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         if objek_baru is not None:
@@ -2846,7 +2866,9 @@ def run_rekon_lokal(path1, path2, out1, out2):
         vendor_fixed_ids.add(id(t))
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
+        # Sama seperti pass vendor Keterangan - vendor sudah "confirmed"
+        # dari Objek, Keterangan Tambahan dikosongkan langsung.
+        ws_t.cell(row=t.row, column=9, value="-")
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         ws_t.cell(row=t.row, column=8, value=objek_baru)
