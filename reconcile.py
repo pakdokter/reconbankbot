@@ -142,7 +142,8 @@ _DEFAULT_EMPLOYEE_ALIASES = {
     "widia": "Baiq Widiani Rintis Sari", "sari": "Baiq Widiani Rintis Sari",
     "kurnia utami nur": "Kurnia Utami Nur", "kurnia": "Kurnia Utami Nur",
     "kur": "Kurnia Utami Nur", "puput": "Kurnia Utami Nur",
-    "oriegia shativa mulia": "Oriegia Shativa Mulia", "gia": "Oriegia Shativa Mulia", "origia": "Oriegia Shativa Mulia",
+    "oriegia shativa mulia": "Oriegia Shativa Mulyadi", "oriegia shativa mulyadi": "Oriegia Shativa Mulyadi",
+    "oriegia shativa mu": "Oriegia Shativa Mulyadi", "gia": "Oriegia Shativa Mulyadi", "origia": "Oriegia Shativa Mulyadi",
     "naura lutfia": "Naura Lutfia", "naura": "Naura Lutfia", "ola": "Naura Lutfia",
     "mila septiana": "Mila Septiana", "mila": "Mila Septiana",
     "ridiaton rizki": "Ridiaton Rizki", "kik": "Ridiaton Rizki",
@@ -1795,7 +1796,7 @@ BCA_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")  # biru
 JAGO_MATCH_FILL = PatternFill("solid", fgColor="FCD9B6")  # orange
 BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 REKONLOKAL_UNMATCHED_FILL = PatternFill("solid", fgColor="FFC7CE")  # merah
-REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="D9C6F2")  # ungu
+REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="8B0000")  # merah darah, mencolok
 
 # Warna highlight yang PUNYA ARTI KHUSUS (arah transfer/belum direkon/
 # kategori mencurigakan) - dipakai untuk cek "apakah baris ini SUDAH
@@ -1808,7 +1809,7 @@ REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="D9C6F2")  # ung
 # tidak kena di baris lain kategori yang SAMA, cuma karena baris itu
 # kebetulan sudah punya warna latar dari sumbernya).
 _MEANINGFUL_HIGHLIGHT_HEXES = {
-    "00BDD7EE", "00FCD9B6", "00FFF2A8", "00FFC7CE", "00D9C6F2",
+    "00BDD7EE", "00FCD9B6", "00FFF2A8", "00FFC7CE", "008B0000",
 }
 
 # Highlight berdasarkan GRUP KATEGORI Layer 1 - dipakai di /rekonlokal
@@ -2773,6 +2774,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             gaji_ambiguous_ids.add(id(t))
             for c in range(1, 10):
                 ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+                ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
 
     # Pembayaran Hutang - Keterangan Tambahan (I) ditulis "Paid to
     # <penerima>" (pakai Objek, Title Case) - sama pola dengan Gaji di
@@ -2863,6 +2865,15 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=7, value="Shopeefood Merchant")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
             ws_t.cell(row=t.row, column=9, value="-")
+            penjualan_fixed_ids.add(id(t))
+        elif "diva nispi yolanda" in objek_k:
+            # "Diva Nispi Yolanda" di Objek = penanda transaksi ke
+            # vendor "Kaola Cookies" - langsung ditetapkan Konsumsi dan
+            # Liburan, Keterangan Tambahan (I) ditulis "Cookies Kaola"
+            # (BUKAN Keterangan/B - beda dari pola vendor standar
+            # lainnya, sesuai permintaan eksplisit user).
+            ws_t.cell(row=t.row, column=3, value="Konsumsi dan Liburan")
+            ws_t.cell(row=t.row, column=9, value="Cookies Kaola")
             penjualan_fixed_ids.add(id(t))
         elif "stoa space" in objek_k or "stoa space" in desc_k:
             # "STOA SPACE HO" di Objek - penanda penjualan masuk via
@@ -3093,13 +3104,15 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             # ini dengan benar kalau memang termasuk salah satu grup.
             cell_b = ws_t.cell(row=t.row, column=2)
             current_fill = cell_b.fill.fgColor.rgb if cell_b.fill else None
-            if current_fill == "00D9C6F2" and id(t) not in gaji_ambiguous_ids:
+            if current_fill == "008B0000" and id(t) not in gaji_ambiguous_ids:
                 for c in range(1, 10):
                     ws_t.cell(row=t.row, column=c).fill = PatternFill(fill_type=None)
+                    ws_t.cell(row=t.row, column=c).font = Font(color="FF000000")
             continue
         n_kategori_mencurigakan += 1
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+            ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
 
     # Highlight grup kategori (Penjualan/Belanja Bahan+Kemasan/dst) -
     # HANYA diterapkan pada baris yang BELUM punya highlight dari pass
