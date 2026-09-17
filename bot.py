@@ -347,7 +347,7 @@ async def handle_rekonlokal_document(update: Update, context: ContextTypes.DEFAU
     out1 = os.path.join(out_dir, files[0][1])
     out2 = os.path.join(out_dir, files[1][1])
     try:
-        result = run_rekon_lokal(files[0][0], files[1][0], out1, out2)
+        result = run_rekon_lokal(files[0][0], files[1][0], out1, out2, filename1=files[0][1], filename2=files[1][1])
     except Exception as e:
         logger.exception("Gagal menjalankan rekon lokal")
         await status_msg.edit_text(f"Gagal: {e}")
