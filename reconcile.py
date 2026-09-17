@@ -260,6 +260,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"kategori_asli": "biaya administrasi", "category": "Pajak dan Administrasi", "sheet_contains": None},
     {"kategori_asli": "administrasi", "category": "Pajak dan Administrasi", "sheet_contains": None},
     {"kategori_asli": "biaya renovasi atap", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
+    {"kategori_asli": "renovasi bangunan", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
 # kalau ada; kalau file/kunci tidak ada, pakai daftar default di atas.
@@ -2259,6 +2260,7 @@ _LEGACY_KATEGORI_RENAME = {
     "biaya administrasi": "Pajak dan Administrasi",
     "administrasi": "Pajak dan Administrasi",
     "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
+    "renovasi bangunan": "Sewa dan Maintenance Bangunan",
     "tools": "Tools dan Equipments",
 }
 
@@ -2676,7 +2678,14 @@ def run_rekon_lokal(path1, path2, out1, out2):
     _qris_teller_pattern = re.compile(
         r"^jam \d{2}:\d{2}:\d{2};.*teller/user id:\s*\S+$", re.IGNORECASE)
     _qris_mid_pattern = re.compile(
-        r"^mid:\s*\d+;\s*cbg:\s*\d+;\s*qr\s*:\s*[\d.]+;\s*ddr:\s*[\d.]+$", re.IGNORECASE)
+        r"^mid:\s*\d+;\s*cbg:\s*\d+;\s*qr\s*:\s*[\d.]+;\s*ddr:\s*[\d.]+(;.*)?$", re.IGNORECASE)
+    # Kode referensi settlement BCA (mis. "0309/FTSCY/WS95051;
+    # 0561864887; 24930FFV02186485", kadang ada embel-embel tambahan di
+    # ujung seperti "; VISIONET INTERNASI") - format "<4 digit>/FTSCY/
+    # <kode>; <nomor rekening>; <kode>", boleh diikuti keterangan
+    # tambahan opsional setelahnya.
+    _bca_ftscy_pattern = re.compile(
+        r"^\d{4}/ftscy/\S+;\s*\d+;\s*\S+(;.*)?$", re.IGNORECASE)
     _PENJUALAN_KATEGORI = {"penjualan", "penjualan shopeefood", "penjualan grabfood"}
     for t in all_txns:
         if (t.kategori or "").strip().lower() not in _PENJUALAN_KATEGORI:
@@ -2684,7 +2693,8 @@ def run_rekon_lokal(path1, path2, out1, out2):
         ket_text = (t.ket or "").strip()
         if not ket_text or ket_text == "-":
             continue
-        if _qris_teller_pattern.match(ket_text) or _qris_mid_pattern.match(ket_text):
+        if (_qris_teller_pattern.match(ket_text) or _qris_mid_pattern.match(ket_text)
+                or _bca_ftscy_pattern.match(ket_text)):
             wb_t, sheet_t = name_to_real[t.sheet]
             wb_t[sheet_t].cell(row=t.row, column=9, value="-")
 
@@ -2696,11 +2706,13 @@ def run_rekon_lokal(path1, path2, out1, out2):
     # untuk 'Biaya Admin Bank' - Keterangan Tambahan-nya dikosongkan
     # tanpa syarat pola tertentu (lebih luas dari pembersihan QRIS di
     # atas yang cuma untuk pola spesifik).
+    penjualan_fixed_ids = set()
     for t in all_txns:
         kat = (t.kategori or "").strip().lower()
         subjek_k = (t.subjek or "").strip().lower()
         objek_k = (t.objek or "").strip().lower()
         desc_k = (t.desc or "").strip().lower()
+        ket_k = (t.ket or "").strip().lower()
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
         # Selain cek Kategori/Subjek/Objek, JUGA cek Keterangan (B) -
@@ -2716,16 +2728,20 @@ def run_rekon_lokal(path1, path2, out1, out2):
         # bank ini sendiri, t.sheet) - BUKAN sebaliknya seperti versi
         # lama (Subjek dibiarkan apa adanya, Objek ditulis nama
         # merchant, yang justru menggambarkan arah TERBALIK).
-        if kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet" or "grabfood" in desc_k:
+        if (kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet"
+                or "grabfood" in desc_k or "visionet" in ket_k or "grabfood" in ket_k):
             ws_t.cell(row=t.row, column=3, value="Penjualan Grabfood")
             ws_t.cell(row=t.row, column=7, value="Grab Merchant")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
             ws_t.cell(row=t.row, column=9, value="-")
-        elif kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay" or "shopeefood" in desc_k:
+            penjualan_fixed_ids.add(id(t))
+        elif (kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay"
+                or "shopeefood" in desc_k or "airpay" in ket_k or "shopeefood" in ket_k):
             ws_t.cell(row=t.row, column=3, value="Penjualan Shopeefood")
             ws_t.cell(row=t.row, column=7, value="Shopeefood Merchant")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
             ws_t.cell(row=t.row, column=9, value="-")
+            penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("kas"):
             # Penjualan yang tercatat DI buku kas sendiri (bukan
             # settlement payment gateway seperti Grabfood/Shopeefood) -
@@ -2854,11 +2870,19 @@ def run_rekon_lokal(path1, path2, out1, out2):
             continue
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        if id(t) in vendor_fixed_ids or id(t) in legacy_renamed_ids:
-            continue  # baru saja dibetulkan pass di atas
+        # baru saja dibetulkan AKTIF oleh pass vendor/legacy-rename/
+        # Grabfood-Shopeefood di atas - diperlakukan SAMA seperti "tidak
+        # (lagi) mencurigakan" (bukan di-skip total), supaya baris ini
+        # TETAP dapat kesempatan dibersihkan dari ungu BASI kalau
+        # kebetulan file ini sudah pernah diproses SEBELUM koreksi aktif
+        # ini ada - kalau di-skip total, ungu basi dari run lama tidak
+        # akan pernah terhapus untuk baris yang SEKARANG sudah aktif
+        # dikoreksi.
+        sudah_dikoreksi_aktif = (id(t) in vendor_fixed_ids or id(t) in legacy_renamed_ids
+                                  or id(t) in penjualan_fixed_ids)
         asli = (t.kategori or "").strip().lower()
         hitung = (t.effective_kategori or "").strip().lower()
-        if not asli or asli == hitung or hitung == "kategori baru":
+        if sudah_dikoreksi_aktif or not asli or asli == hitung or hitung == "kategori baru":
             # TIDAK/tidak lagi mencurigakan - tapi kalau baris ini masih
             # bertahan warna ungu dari RUN /rekonlokal SEBELUMNYA (mis.
             # kategori sekarang sudah konsisten setelah perbaikan aturan,
