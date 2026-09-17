@@ -1993,7 +1993,52 @@ def _gaji_rekon_lokal_info(t):
     return nama_depan, MONTHS_ID[bulan_idx], tahun, is_bulan_ini
 
 
-def _infer_account_name(txns):
+def _looks_like_account_identifier(v):
+    """True kalau v terlihat seperti identitas rekening/kode bank (ada
+    digit, seperti 'BRI-507'/'BCA-887'/'BSI-288', atau menyebut kata
+    kunci rekening umum seperti 'jago'/'kas'/'buku'), BUKAN nama
+    vendor/pelanggan/pegawai biasa. Dipakai _infer_account_name untuk
+    MEMPRIORITASKAN kandidat yang genuinely kemungkinan rekening,
+    bukan cuma yang paling sering disebut - supaya nama vendor yang
+    kebetulan sering muncul di transaksi (mis. 'SHOPEE' tempat belanja
+    bahan online) tidak salah terpilih jadi identitas rekening, kalah
+    dari rekening lawan transaksi yang genuinely lebih jarang disebut
+    eksplisit di data."""
+    if any(ch.isdigit() for ch in v):
+        return True
+    v_lower = v.lower()
+    return any(tok in v_lower for tok in ("jago", "kas", "buku", "mandiri", "bni", "bri", "bca", "bsi"))
+
+
+_MONTH_NAMES_LOWER = {m.lower() for m in ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                                            "Juli", "Agustus", "September", "Oktober", "November", "Desember"]}
+
+
+def _account_name_from_filename(filename):
+    """Ekstrak kemungkinan nama rekening dari nama file ASLI (mis.
+    'BSI-288_Oktober_2024.xlsx' -> 'BSI-288', 'BSI-288_Oktober_2024
+    (1).xlsx' atau 'BSI-288_Oktober_2024__1_.xlsx' -> 'BSI-288', buang
+    embel-embel duplikat upload) - dipakai sebagai SINYAL TAMBAHAN
+    untuk _infer_account_name kalau data transaksi file itu sendiri
+    genuinely TIDAK PERNAH menyebut nama rekeningnya sendiri di kolom
+    Subjek/Objek manapun (semua transaksi di file itu merujuk pihak
+    LAIN - vendor/pelanggan/rekening lawan - bukan dirinya sendiri,
+    kasus nyata: file BSI-288 yang isinya semua transaksi ke vendor
+    luar, kata 'BSI-288' sendiri tidak pernah muncul sebagai Subjek/
+    Objek di baris manapun). Return None kalau filename tidak
+    mengikuti pola yang bisa diekstrak."""
+    if not filename:
+        return None
+    stem = re.sub(r"\.xlsx?$", "", filename, flags=re.IGNORECASE)
+    stem = re.sub(r"[\s_]*\(\d+\)$", "", stem)  # " (1)" gaya browser
+    stem = re.sub(r"__\d+_$", "", stem)  # "__1_" gaya Telegram
+    parts = re.split(r"[_\s]+", stem)
+    kept = [p for p in parts
+            if p and p.lower() not in _MONTH_NAMES_LOWER and not re.fullmatch(r"(19|20)\d{2}", p)]
+    return " ".join(kept).strip() or None
+
+
+def _infer_account_name(txns, filename_hint=None):
     """Tebak nama/kode rekening dari data transaksinya sendiri - ambil
     nilai Subjek/Objek (gabungan) yang PALING SERING muncul, kecuali
     placeholder ('-'), nama sheet generik ('Mutasi'), dan 'Tenant Lain'
@@ -2002,24 +2047,63 @@ def _infer_account_name(txns):
     kebetulan jadi nilai PALING SERING muncul di file yang banyak
     transaksi tak dikenal objeknya, salah menggantikan nama rekening
     asli yang benar seperti 'BSI-288') - keduanya tidak merepresentasikan
-    rekening apapun. Dipakai untuk file 'Rekon Lokal' berdiri sendiri
-    yang sheet-nya sering dinamai generik ('Mutasi') di KEDUA file -
-    nama sheet TIDAK BISA dipakai sebagai identitas rekening (selain
-    tidak informatif, kalau kedua file kebetulan sheet-nya sama persis,
-    itu bikin identitas keduanya tertukar total di sisi pencocokan/
-    penulisan hasil).
+    rekening apapun.
 
-    Return None kalau tidak ada kandidat jelas (fallback ke nama sheet
-    apa adanya oleh pemanggil)."""
+    Di antara kandidat yang tersisa, kandidat yang TERLIHAT SEPERTI
+    identitas rekening (lihat _looks_like_account_identifier - ada
+    digit atau kata kunci bank umum) DIPRIORITASKAN dari yang cuma
+    nama vendor/pelanggan biasa - supaya nama vendor yang kebetulan
+    sering disebut (mis. 'SHOPEE' tempat belanja online) tidak
+    mengalahkan nama rekening lawan transaksi yang genuinely lebih
+    jarang disebut eksplisit.
+
+    filename_hint (opsional, dari nama file ASLI yang diupload user -
+    lihat _account_name_from_filename): kalau ADA di antara kandidat
+    (persis atau sebagai substring case-insensitive), MENANG mutlak -
+    ini sinyal PALING KUAT karena nama file biasanya sengaja dinamai
+    sesuai rekeningnya. Kalau TIDAK ada kandidat account-like SAMA
+    SEKALI dari data transaksi (kasus nyata: file yang SEMUA
+    transaksinya merujuk pihak luar, nama rekeningnya sendiri tidak
+    pernah disebut sebagai Subjek/Objek di baris manapun),
+    filename_hint dipakai LANGSUNG sebagai fallback terakhir sebelum
+    None.
+
+    Dipakai untuk file 'Rekon Lokal' berdiri sendiri yang sheet-nya
+    sering dinamai generik ('Mutasi') di KEDUA file - nama sheet TIDAK
+    BISA dipakai sebagai identitas rekening (selain tidak informatif,
+    kalau kedua file kebetulan sheet-nya sama persis, itu bikin
+    identitas keduanya tertukar total di sisi pencocokan/penulisan
+    hasil).
+
+    Return None kalau tidak ada kandidat jelas maupun filename_hint
+    (fallback ke nama sheet apa adanya oleh pemanggil)."""
     counts = {}
     for t in txns:
         for v in (t.subjek, t.objek):
             v = (v or "").strip()
             if v and v.lower() not in ("-", "mutasi", "tenant lain"):
                 counts[v] = counts.get(v, 0) + 1
+    if filename_hint:
+        # filename_hint SELALU menang kalau tersedia - nama file adalah
+        # sinyal PALING kuat (rekening biasanya sengaja dinamai sesuai
+        # file-nya), lebih dipercaya daripada kandidat apapun hasil
+        # tebakan dari data transaksi, TERMASUK kandidat yang terlihat
+        # account-like (mis. 'BCA-887' yang muncul di data cuma karena
+        # itu REKENING LAWAN transaksi, bukan identitas file ini
+        # sendiri). Cek dulu apakah ada kandidat data yang cocok (buat
+        # konsistensi format, mis. 'BRI-567(Biz)' vs filename 'BRI-567')
+        # - kalau tidak ada yang cocok, filename_hint tetap dipakai
+        # LANGSUNG, bukan jatuh ke tebakan account-like.
+        for cand in counts:
+            if cand.lower() == filename_hint.lower() or filename_hint.lower() in cand.lower():
+                return cand
+        return filename_hint
     if not counts:
         return None
-    return max(counts.items(), key=lambda kv: kv[1])[0]
+    account_like = {k: v for k, v in counts.items() if _looks_like_account_identifier(k)}
+    if not account_like:
+        return max(counts.items(), key=lambda kv: kv[1])[0]
+    return max(account_like.items(), key=lambda kv: kv[1])[0]
 
 
 def _find_style_reference_row(ws, row):
@@ -2385,7 +2469,7 @@ def run_rekon_bersih(path, output_path):
     return {"n_subjek_objek_dilengkapi": n_subjek_objek_dilengkapi, "n_kategori_dilengkapi": n_kategori_dilengkapi}
 
 
-def run_rekon_lokal(path1, path2, out1, out2):
+def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
     """Rekon Lokal - fitur MANUAL ringan: cocokkan HANYA transaksi
     'Transaksi Internal' antar 2 file rekening (bukan rekonsiliasi penuh
     - tidak ada Laba Rugi/Neraca/deteksi minus/dst). Untuk transfer yang
@@ -2428,6 +2512,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
         raise ValueError(f"File '{path2}' tidak punya sheet rekening berformat standar yang dikenali.")
 
     all_txns = []
+    filename_hints = {"1": _account_name_from_filename(filename1), "2": _account_name_from_filename(filename2)}
     # key = nama rekening HASIL TEBAKAN (unik per file, dipakai sebagai
     # t.sheet pengganti supaya find_matches tidak pernah menganggap 2
     # sheet dari file BEDA sebagai "sheet yang sama" cuma karena judul
@@ -2437,7 +2522,7 @@ def run_rekon_lokal(path1, path2, out1, out2):
         for sn in sheets:
             split_fliptech_combined_rows(wb[sn])
             txns, _ = read_account_sheet(wb[sn])
-            akun = _infer_account_name(txns) or f"{sn} ({tag})"
+            akun = _infer_account_name(txns, filename_hint=filename_hints[tag]) or f"{sn} ({tag})"
             # Tabrakan nama rekening ANTAR FILE - bisa terjadi walau
             # _infer_account_name jalan benar, kalau KEDUA file memang
             # jenis yang sama (mis. dua file Kas Buku, keduanya sama-
