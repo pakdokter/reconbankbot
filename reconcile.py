@@ -1916,6 +1916,11 @@ _OBJEK_VENDOR_RULES = [
     (["rasbani"], "Waroeng Rasbani", "Konsumsi dan Liburan", "Waroeng Rasbani"),
     (["biaya transfer keluar biaya"], "Biaya Transfer Keluar", "Biaya Admin Bank", "Biaya Admin Bank"),
     (["adobe"], "Adobe", "Subscription", "Adobe"),
+    (["ace team hq i", "ace team"], "Ace Team", "Pengeluaran Pribadi", "Ace Team"),
+    (["kava coffee"], "Kava Coffee", "Pengeluaran Pribadi", "Kava Coffee"),
+    (["tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
+    (["samsul padli"], "Bayar Mess Karyawan", "Overhead", "Samsul Padli"),
+    (["muhammad zulfadli"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Zulfadli"),
 ]
 
 
@@ -2858,6 +2863,19 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=7, value="Shopeefood Merchant")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
             ws_t.cell(row=t.row, column=9, value="-")
+            penjualan_fixed_ids.add(id(t))
+        elif "stoa space" in objek_k or "stoa space" in desc_k:
+            # "STOA SPACE HO" di Objek - penanda penjualan masuk via
+            # QRIS/EDC BCA (nama tenant sendiri muncul di catatan bank
+            # sebagai identitas terminal, BUKAN pihak lawan transaksi
+            # sungguhan) - Kategori dipastikan Penjualan, Keterangan
+            # diseragamkan, Subjek/Objek ikut arah Penjualan standar
+            # (Subjek = sumber/label pembayar, Objek = rekening
+            # penerima ini sendiri).
+            ws_t.cell(row=t.row, column=3, value="Penjualan")
+            ws_t.cell(row=t.row, column=2, value="Sales via EDC BCA")
+            ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
+            ws_t.cell(row=t.row, column=8, value=t.sheet)
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("kas"):
             # Penjualan yang tercatat DI buku kas sendiri (bukan
