@@ -261,6 +261,7 @@ _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"kategori_asli": "administrasi", "category": "Pajak dan Administrasi", "sheet_contains": None},
     {"kategori_asli": "biaya renovasi atap", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
     {"kategori_asli": "renovasi bangunan", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
+    {"kategori_asli": "renovasi", "category": "Sewa dan Maintenance Bangunan", "sheet_contains": None},
 ]
 # Dimuat dari shared_rules.json (dipakai bersama reconbot & bank-statement-bot)
 # kalau ada; kalau file/kunci tidak ada, pakai daftar default di atas.
@@ -1888,6 +1889,12 @@ _KAS_BUKU_VENDOR_RULES = [
     (["belanja arumi", "arumi"], "Arumi", "Kemasan", None),
     (["masuya"], "UHT dan Pasta", "Belanja Bahan", None),
     (["pembayaran briva ke tokopedia", "tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
+    (["mira laundry"], "Mira Laundry", "Overhead", "Mira Laundry"),
+    (["tomoro coffee", "tomoro"], "Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
+    (["sukanda jaya", "diamond fair", "sukanda"], "Sukanda", "Belanja Bahan", "Sukanda"),
+    (["shopeepay", "shopee pay", "shopee"], "Shopee", "Belanja Bahan", "Shopee"),
+    (["iklan tiktok", "tiktok ads", "tiktok"], "TikTok", "Marketing", "TikTok"),
+    (["iklan facebook", "facebook ads", "fb ads", "meta ads", "facebook"], "MetaAds", "Marketing", "MetaAds"),
 ]
 
 # Vendor yang trigger-nya SPESIFIK dari kolom Objek (bukan Keterangan) -
@@ -1900,6 +1907,15 @@ _OBJEK_VENDOR_RULES = [
     (["nanda audia agusti", "nanda audia agustin"], "Kliffer Plastik", "Kemasan", "Kliffer Plastik"),
     (["madam baha", "madam bahan kue", "toko madam"], "Toko Madam", "Belanja Bahan", "Toko Madam"),
     (["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "Anugerah Plastik", "Kemasan", "Anugerah Plastik"),
+    (["mira laundry"], "Mira Laundry", "Overhead", "Mira Laundry"),
+    (["tomoro coffee", "tomoro"], "Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
+    (["sukanda jaya", "diamond fair", "sukanda"], "Sukanda", "Belanja Bahan", "Sukanda"),
+    (["shopeepay", "shopee pay"], "Shopee", "Belanja Bahan", "Shopee"),
+    (["iklan tiktok", "tiktok ads", "tiktok"], "TikTok", "Marketing", "TikTok"),
+    (["iklan facebook", "facebook ads", "fb ads", "meta ads", "facebook"], "MetaAds", "Marketing", "MetaAds"),
+    (["rasbani"], "Waroeng Rasbani", "Konsumsi dan Liburan", "Waroeng Rasbani"),
+    (["biaya transfer keluar biaya"], "Biaya Transfer Keluar", "Biaya Admin Bank", "Biaya Admin Bank"),
+    (["adobe"], "Adobe", "Subscription", "Adobe"),
 ]
 
 
@@ -2346,6 +2362,7 @@ _LEGACY_KATEGORI_RENAME = {
     "administrasi": "Pajak dan Administrasi",
     "biaya renovasi atap": "Sewa dan Maintenance Bangunan",
     "renovasi bangunan": "Sewa dan Maintenance Bangunan",
+    "renovasi": "Sewa dan Maintenance Bangunan",
     "tools": "Tools dan Equipments",
 }
 
@@ -2876,7 +2893,15 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
     #   "GoPay <nomor>" -> Objek "Gopay Owner"
     #   "BCA <nomor rekening>" -> Objek "BCA-<3 digit terakhir>"
     _gopay_ket_pattern = re.compile(r"\bgopay\s+0?\d{6,}\b", re.IGNORECASE)
-    _bca_ket_pattern = re.compile(r"\bbca\s+(\d{6,})\b", re.IGNORECASE)
+    # Nomor rekening BCA GENUINE biasanya 10 digit (kadang 9-11
+    # tergantung jenis rekening) - dibatasi rentang ini (BUKAN "6 atau
+    # lebih" seperti sebelumnya) supaya tidak salah menangkap kode
+    # referensi lain yang kebetulan diawali "BCA" tapi angkanya JAUH
+    # lebih panjang (mis. kode QRIS/merchant 19 digit seperti
+    # "9360001430017297828" - itu BUKAN indikasi rekening BCA sungguhan,
+    # cuma kebetulan format teksnya mirip).
+    _bca_ket_pattern = re.compile(r"\bbca\s+(\d{9,11})\b", re.IGNORECASE)
+    _bca_label_pattern = re.compile(r"^bca-\d{3}$", re.IGNORECASE)
     for t in all_txns:
         ket_text = t.ket or ""
         objek_baru = None
@@ -2886,6 +2911,17 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             m = _bca_ket_pattern.search(ket_text)
             if m:
                 objek_baru = f"BCA-{m.group(1)[-3:]}"
+            elif _bca_label_pattern.match((t.objek or "").strip()):
+                # Objek SUDAH menyandang label "BCA-XXX" (dari run
+                # sebelumnya, sebelum pembatasan 9-11 digit ada), tapi
+                # Keterangan Tambahan SAAT INI tidak mendukung label itu
+                # sebagai indikasi rekening BCA genuine (baik karena
+                # angkanya di luar rentang genuine, ATAU tidak ada pola
+                # "BCA <angka>" sama sekali di teksnya) - batalkan label
+                # basi itu, jangan dibiarkan tersandang tanpa dasar.
+                wb_t, sheet_t = name_to_real[t.sheet]
+                wb_t[sheet_t].cell(row=t.row, column=8, value="-")
+                continue
         if objek_baru is None or (t.objek or "").strip() == objek_baru:
             continue
         wb_t, sheet_t = name_to_real[t.sheet]
@@ -2987,6 +3023,19 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
     new_kategori_fixed_ids = set()
     for t in all_txns:
         if t.is_opening:
+            continue
+        # Baris yang SUDAH dikoreksi aktif oleh pass vendor/legacy-
+        # rename/Grabfood-Shopeefood di atas dilewati - vendor pass bisa
+        # menulis Kategori yang LEBIH SPESIFIK/BENAR (mis. 'Belanja
+        # Bahan' untuk vendor Shopee tertentu) daripada apa yang
+        # dihitung effective_kategori dari aturan kata kunci GENERIK
+        # (mis. 'shopee' -> 'Overhead' di CATEGORY_OVERRIDE_RULES, yang
+        # tidak tahu-menahu soal vendor spesifik ini) - t.kategori
+        # sendiri TIDAK berubah (Txn tidak dimutasi saat menulis ke
+        # sel), jadi tanpa pengecualian ini, pass ini akan salah
+        # menimpa BALIK hasil vendor yang sudah benar dengan hasil
+        # effective_kategori yang lebih generik.
+        if id(t) in vendor_fixed_ids or id(t) in legacy_renamed_ids or id(t) in penjualan_fixed_ids:
             continue
         asli = (t.kategori or "").strip().lower()
         if asli not in ("new kategori", "kategori baru"):
