@@ -1923,6 +1923,12 @@ _OBJEK_VENDOR_RULES = [
     (["tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
     (["samsul padli"], "Bayar Mess Karyawan", "Overhead", "Samsul Padli"),
     (["muhammad zulfadli"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Zulfadli"),
+    (["muhammad umar al-khatib", "muhammad umar al khatib"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Umar Al-Khatib"),
+    (["shopee"], "Shopee", "Belanja Bahan", "Shopee"),
+    (["saddam"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Saddam"),
+    (["pt yaoya berkat sejati", "yaoya berkat sejati", "yaoya"], "Yaoya", "Belanja Bahan", "Yaoya"),
+    (["yudi haryono"], "Reparasi Tools Listrik", "Reparasi dan Maintenance Tools dan Mesin", "Yudi Haryono"),
+    (["oriel chicken"], "Oriel Chicken", "Konsumsi dan Liburan", "Oriel Chicken"),
 ]
 
 
