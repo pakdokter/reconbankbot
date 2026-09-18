@@ -2400,6 +2400,10 @@ def run_rekon_bersih(path, output_path):
        yang sudah diketahui pasti) dan _find_closest_official_category
        (pencocokan fuzzy berbasis kata untuk kasus lain, HANYA kalau
        cukup spesifik/tidak ambigu dengan kategori resmi lain).
+    6. Keterangan Tambahan (I) diberi label status tenant (Objek) -
+       tenant dikenal (EMPLOYEE_ALIASES/vendor terdaftar) -> "Paid Off
+       to <tenant>", tenant terisi tapi tidak dikenal -> "Unrecognized
+       Tenant", tenant kosong -> dibiarkan kosong.
     Tidak melakukan pencocokan transfer - fitur ini SENGAJA dibatasi
     cuma pada format+Subjek/Objek+Kategori sesuai permintaan eksplisit
     user, bukan rekategorisasi penuh berbasis kata kunci Keterangan
@@ -2423,6 +2427,12 @@ def run_rekon_bersih(path, output_path):
             _known_vendor_names[_ket.lower()] = _ket
             if _objek:
                 _known_vendor_names[_objek.lower()] = _objek
+
+    # Set gabungan (nilai TERISI, lower()) untuk pengecekan "tenant
+    # dikenal" di label Keterangan Tambahan (I) - EMPLOYEE_ALIASES
+    # (alias DAN nama lengkap resminya) plus vendor yang dikenal.
+    _known_tenant_names_bersih = set(EMPLOYEE_ALIASES.keys()) | {v.lower() for v in EMPLOYEE_ALIASES.values()}
+    _known_tenant_names_bersih |= set(_known_vendor_names.keys())
 
     n_subjek_objek_dilengkapi = 0
     n_kategori_dilengkapi = 0
@@ -2466,6 +2476,20 @@ def run_rekon_bersih(path, output_path):
             if target and target != kategori_asli:
                 ws.cell(row=t.row, column=3, value=target)
                 n_kategori_dilengkapi += 1
+            # Label Keterangan Tambahan (I) berdasarkan status tenant di
+            # Objek (SAMA konsep dengan /rekonlokal, versi tanpa
+            # pencocokan transfer karena /rekonbersih cuma 1 file):
+            # tenant kosong -> dibiarkan kosong, tenant dikenal (dari
+            # EMPLOYEE_ALIASES atau daftar vendor terdaftar) -> "Paid
+            # Off to <tenant>", tenant terisi tapi tidak dikenal ->
+            # "Unrecognized Tenant". Dicek dari Objek TERKINI (setelah
+            # kemungkinan dilengkapi di pass Subjek/Objek di atas).
+            objek_final = (ws.cell(row=t.row, column=8).value or "").strip()
+            if objek_final and objek_final != "-":
+                if objek_final.lower() in _known_tenant_names_bersih:
+                    ws.cell(row=t.row, column=9, value=f"Paid Off to {objek_final}")
+                else:
+                    ws.cell(row=t.row, column=9, value="Unrecognized Tenant")
             # Highlight warna kelompok kategori - DISEGARKAN ulang sesuai
             # Kategori TERKINI (setelah kemungkinan dikoreksi di atas),
             # supaya kalau file ini sebelumnya sempat diwarnai versi
@@ -2620,9 +2644,17 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # belum direkon.
         ws_p.cell(row=pengirim.row, column=3, value="Transaksi Internal")
         ws_r.cell(row=penerima.row, column=3, value="Transaksi Internal")
-        solved_note = f"Solved {pengirim.sheet} to {penerima.sheet}"
-        ws_p.cell(row=pengirim.row, column=9, value=solved_note)
-        ws_r.cell(row=penerima.row, column=9, value=solved_note)
+        # Confidence Medium: cocok tapi tidak 100% pasti (selisih
+        # nominal/tanggal masih dalam toleransi) - Keterangan Tambahan
+        # ditulis "Medium Unresolved" (BUKAN "Solved X to Y" seperti
+        # confidence High) supaya jelas kelihatan ini masih perlu
+        # verifikasi manual, bukan sudah pasti selesai.
+        if m.confidence == "Medium":
+            note = "Medium Unresolved"
+        else:
+            note = f"Solved {pengirim.sheet} to {penerima.sheet}"
+        ws_p.cell(row=pengirim.row, column=9, value=note)
+        ws_r.cell(row=penerima.row, column=9, value=note)
         ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {penerima.sheet}")
         ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {pengirim.sheet}")
         # Confidence Medium (cocok tapi tidak 100% pasti - selisih
@@ -2692,6 +2724,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         n_belum_rekon += 1
         wb_t, sheet_t = name_to_real[src.sheet]
         ws_t = wb_t[sheet_t]
+        ws_t.cell(row=src.row, column=9, value="Unresolved")
         for c in range(1, 10):
             ws_t.cell(row=src.row, column=c).fill = REKONLOKAL_UNMATCHED_FILL
 
@@ -3001,12 +3034,13 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         vendor_fixed_ids.add(id(t))
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
-        # Vendor sudah "confirmed" (dikenali pasti dari daftar), tidak
-        # ada info tambahan yang perlu dipertahankan - Keterangan
-        # Tambahan dikosongkan langsung (BUKAN diarsip, beda dari pass
-        # koreksi Kategori/Objek biasa yang masih mengarsip Keterangan
-        # lama karena statusnya belum tentu confirmed).
-        ws_t.cell(row=t.row, column=9, value="-")
+        # Vendor sudah "confirmed" (dikenali pasti dari daftar) -
+        # Keterangan Tambahan ditulis "Paid Off to <tenant>" sesuai
+        # permintaan user, BUKAN diarsip (vendor yang sudah pasti
+        # dikenali dari daftar tidak perlu menyimpan catatan referensi
+        # lama).
+        tenant_label = objek_baru or keterangan_baru
+        ws_t.cell(row=t.row, column=9, value=f"Paid Off to {tenant_label}")
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         if objek_baru is not None:
@@ -3029,8 +3063,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
         # Sama seperti pass vendor Keterangan - vendor sudah "confirmed"
-        # dari Objek, Keterangan Tambahan dikosongkan langsung.
-        ws_t.cell(row=t.row, column=9, value="-")
+        # dari Objek, Keterangan Tambahan ditulis "Paid Off to <tenant>".
+        ws_t.cell(row=t.row, column=9, value=f"Paid Off to {objek_baru}")
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         ws_t.cell(row=t.row, column=8, value=objek_baru)
@@ -3122,6 +3156,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
                     ws_t.cell(row=t.row, column=c).font = Font(color="FF000000")
             continue
         n_kategori_mencurigakan += 1
+        ws_t.cell(row=t.row, column=9, value="Suspicious")
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
             ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
@@ -3147,6 +3182,41 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             continue
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = fill
+
+    # Label akhir untuk baris yang BELUM disentuh pass manapun di atas -
+    # dicek dari Keterangan Tambahan (I) yang MASIH SAMA PERSIS dengan
+    # nilai mentah aslinya (t.ket) - kalau sudah beda, berarti SUDAH
+    # dapat label bermakna dari salah satu pass sebelumnya (Solved,
+    # Medium Unresolved, Unresolved, Suspicious, Paid Off to, Paid to,
+    # -, dll), jadi TIDAK disentuh lagi di sini.
+    # - Objek KOSONG ('-'/kosong) -> dibiarkan apa adanya, TIDAK ditulis
+    #   apa-apa (sesuai permintaan eksplisit user).
+    # - Objek TERISI dan DIKENALI (cocok EMPLOYEE_ALIASES atau nama
+    #   vendor yang sudah terdaftar di sistem) -> "Paid Off to <Objek>".
+    # - Objek TERISI tapi TIDAK dikenali sama sekali -> "Unrecognized
+    #   Tenant".
+    _known_tenant_names = {v.lower() for v in EMPLOYEE_ALIASES.values()}
+    for _rules_list in (_KAS_BUKU_VENDOR_RULES, _OBJEK_VENDOR_RULES):
+        for _keywords, _ket, _kat, _objek in _rules_list:
+            _known_tenant_names.add(_ket.lower())
+            if _objek:
+                _known_tenant_names.add(_objek.lower())
+    _known_tenant_names.update({"grab merchant", "shopeefood merchant", "gopay owner"})
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        current_i = ws_t.cell(row=t.row, column=9).value
+        if (current_i or "") != (t.ket or ""):
+            continue  # sudah dapat label dari pass lain, jangan disentuh
+        objek_sekarang = (ws_t.cell(row=t.row, column=8).value or "").strip()
+        if not objek_sekarang or objek_sekarang == "-":
+            continue  # tenant kosong - biarkan kosong
+        if objek_sekarang.lower() in _known_tenant_names:
+            ws_t.cell(row=t.row, column=9, value=f"Paid Off to {objek_sekarang}")
+        else:
+            ws_t.cell(row=t.row, column=9, value="Unrecognized Tenant")
 
     # Pembersihan akhir per sheet - hapus baris tanpa angka, samakan
     # format mata uang, hitung ulang & patenkan (nilai statis, bukan
