@@ -1897,6 +1897,7 @@ _KAS_BUKU_VENDOR_RULES = [
     (["shopeepay", "shopee pay", "shopee"], "Shopee", "Belanja Bahan", "Shopee"),
     (["iklan tiktok", "tiktok ads", "tiktok"], "TikTok", "Marketing", "TikTok"),
     (["iklan facebook", "facebook ads", "fb ads", "meta ads", "facebook"], "MetaAds", "Marketing", "MetaAds"),
+    (["dompet anak bangsa"], "Gopay", "Overhead", "Gopay"),
 ]
 
 # Vendor yang trigger-nya SPESIFIK dari kolom Objek (bukan Keterangan) -
@@ -1906,8 +1907,9 @@ _KAS_BUKU_VENDOR_RULES = [
 # _KAS_BUKU_VENDOR_RULES (keyword_objek, keterangan_baru, kategori_baru,
 # objek_baru) - keyword dicek pakai batas kata terhadap Objek transaksi.
 _OBJEK_VENDOR_RULES = [
-    (["nanda audia agusti", "nanda audia agustin"], "Kliffer Plastik", "Kemasan", "Kliffer Plastik"),
+    (["nanda audia agusti", "nanda audia agustin", "kliffer plastik"], "Kliffer Plastik", "Kemasan", "Kliffer Plastik"),
     (["madam baha", "madam bahan kue", "toko madam"], "Toko Madam", "Belanja Bahan", "Toko Madam"),
+    (["dompet anak bangsa"], "Gopay", "Overhead", "Gopay"),
     (["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "Anugerah Plastik", "Kemasan", "Anugerah Plastik"),
     (["mira laundry"], "Mira Laundry", "Overhead", "Mira Laundry"),
     (["tomoro coffee", "tomoro"], "Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
