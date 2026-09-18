@@ -2619,14 +2619,27 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
 
     n_high = 0
     n_medium = 0
+    n_low = 0
     matched_ids = set()
     for m in matches:
-        if m.dst is None or m.confidence not in ("High", "Medium"):
+        # Confidence "Low" DULU jatuh ke celah - tidak ditangani loop
+        # matching ini (excluded karena confidence bukan High/Medium)
+        # MAUPUN loop "belum direkon" di bawah (excluded karena m.dst
+        # SUDAH terisi, technically "matched" walau confidence rendah) -
+        # akibatnya baris begini tidak pernah dapat label "Solved"/
+        # "Medium Unresolved"/"Unresolved" SAMA SEKALI, dan pass label
+        # tenant paling akhir salah mengiranya "belum tersentuh" lalu
+        # menandainya "Unrecognized Tenant" - padahal ini genuinely
+        # transfer internal, bukan soal tenant sama sekali. Confidence
+        # Low SEKARANG ditangani DI SINI juga (sejajar dengan Medium).
+        if m.dst is None or m.confidence not in ("High", "Medium", "Low"):
             continue
         if m.confidence == "High":
             n_high += 1
-        else:
+        elif m.confidence == "Medium":
             n_medium += 1
+        else:
+            n_low += 1
         pengirim, penerima = _sender_receiver(m.src, m.dst)
         matched_ids.add(id(pengirim))
         matched_ids.add(id(penerima))
@@ -2650,28 +2663,31 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # belum direkon.
         ws_p.cell(row=pengirim.row, column=3, value="Transaksi Internal")
         ws_r.cell(row=penerima.row, column=3, value="Transaksi Internal")
-        # Confidence Medium: cocok tapi tidak 100% pasti (selisih
-        # nominal/tanggal masih dalam toleransi) - Keterangan Tambahan
-        # ditulis "Medium Unresolved" (BUKAN "Solved X to Y" seperti
-        # confidence High) supaya jelas kelihatan ini masih perlu
-        # verifikasi manual, bukan sudah pasti selesai.
+        # Confidence Medium/Low: cocok tapi tidak 100% pasti (selisih
+        # nominal/tanggal masih dalam toleransi, Low = toleransi lebih
+        # longgar dari Medium) - Keterangan Tambahan ditulis "Medium/Low
+        # Unresolved" (BUKAN "Solved X to Y" seperti confidence High)
+        # supaya jelas kelihatan ini masih perlu verifikasi manual.
         if m.confidence == "Medium":
             note = "Medium Unresolved"
+        elif m.confidence == "Low":
+            note = "Low Unresolved"
         else:
             note = f"Solved {pengirim.sheet} to {penerima.sheet}"
         ws_p.cell(row=pengirim.row, column=9, value=note)
         ws_r.cell(row=penerima.row, column=9, value=note)
         ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {penerima.sheet}")
         ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {pengirim.sheet}")
-        # Confidence Medium (cocok tapi tidak 100% pasti - selisih
+        # Confidence Medium/Low (cocok tapi tidak 100% pasti - selisih
         # nominal/tanggal masih dalam toleransi, bukan match persis) -
         # dihighlight merah shade LEBIH MUDA daripada highlight "belum
         # direkon" (FFC7CE), MENGGANTIKAN warna grup bank tujuan biasa -
         # supaya baris ini tetap kelihatan beda/perlu perhatian ekstra
         # dibanding match High yang sudah pasti, tapi TIDAK disamakan
         # semencolok "belum direkon" yang genuinely belum ketemu sama
-        # sekali.
-        if m.confidence == "Medium":
+        # sekali. Low dan Medium pakai warna sama (beda ditandai lewat
+        # teks "Low Unresolved" vs "Medium Unresolved" di kolom I).
+        if m.confidence in ("Medium", "Low"):
             fill = REKONLOKAL_MEDIUM_CONFIDENCE_FILL
         else:
             fill = _bank_group_fill(penerima.sheet)
@@ -3237,7 +3253,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
     wb1.save(out1)
     wb2.save(out2)
     return {
-        "n_high": n_high, "n_medium": n_medium, "n_belum_rekon": n_belum_rekon,
+        "n_high": n_high, "n_medium": n_medium, "n_low": n_low, "n_belum_rekon": n_belum_rekon,
         "n_kategori_mencurigakan": n_kategori_mencurigakan,
     }
 
