@@ -2875,7 +2875,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=3, value="Konsumsi dan Liburan")
             ws_t.cell(row=t.row, column=9, value="Cookies Kaola")
             penjualan_fixed_ids.add(id(t))
-        elif "stoa space" in objek_k or "stoa space" in desc_k:
+        elif "stoa space" in objek_k or "stoa space" in desc_k or "stoa space" in subjek_k:
             # "STOA SPACE HO" di Objek - penanda penjualan masuk via
             # QRIS/EDC BCA (nama tenant sendiri muncul di catatan bank
             # sebagai identitas terminal, BUKAN pihak lawan transaksi
