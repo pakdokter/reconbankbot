@@ -1879,17 +1879,17 @@ def _bank_group_fill(sheet_title):
 # polos, supaya kata pendek seperti "SB"/"Pasar" tidak salah tangkap
 # teks lain yang kebetulan mengandungnya).
 _KAS_BUKU_VENDOR_RULES = [
-    (["belanja sb", "sb"], "Sinar Bahagia", "Belanja Bahan", None),
-    (["belanja amanah", "amanah"], "Amanah", "Belanja Bahan", None),
-    (["belanja fadhilah", "fadhilah"], "Fadhilah", "Belanja Bahan", None),
-    (["belanja primer raya", "primer raya", "primer"], "Primer", "Belanja Bahan", None),
-    (["belanja pasar", "pasar"], "Pasar", "Belanja Bahan", None),
-    (["belanja abadi", "abadi"], "Pasar", "Belanja Bahan", None),
-    (["dinda food", "dinda frozen", "belanja dinda"], "Dinda Food and Frozen", "Belanja Bahan", None),
-    (["belanja mak opik", "mak opik", "mak opi"], "Mak Opik", "Belanja Bahan", None),
-    (["galon", "cleo"], "Air Mineral", "Belanja Bahan", None),
-    (["belanja arumi", "arumi"], "Arumi", "Kemasan", None),
-    (["masuya"], "UHT dan Pasta", "Belanja Bahan", None),
+    (["belanja sb", "sinar bahagia", "sb"], "Sinar Bahagia", "Belanja Bahan", "Sinar Bahagia"),
+    (["belanja amanah", "amanah"], "Amanah", "Belanja Bahan", "Amanah"),
+    (["belanja fadhilah", "fadhilah"], "Fadhilah", "Belanja Bahan", "Fadhilah"),
+    (["belanja primer raya", "primer raya", "primer"], "Primer", "Belanja Bahan", "Primer"),
+    (["belanja pasar", "pasar"], "Pasar", "Belanja Bahan", "Pasar"),
+    (["belanja abadi", "abadi"], "Pasar", "Belanja Bahan", "Pasar"),
+    (["dinda food", "dinda frozen", "belanja dinda"], "Dinda Food and Frozen", "Belanja Bahan", "Dinda Food and Frozen"),
+    (["belanja mak opik", "mak opik", "mak opi"], "Mak Opik", "Belanja Bahan", "Mak Opik"),
+    (["galon", "cleo"], "Air Mineral", "Belanja Bahan", "Air Mineral"),
+    (["belanja arumi", "arumi"], "Arumi", "Kemasan", "Arumi"),
+    (["masuya"], "UHT dan Pasta", "Belanja Bahan", "Masuya"),
     (["pembayaran briva ke tokopedia", "tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
     (["mira laundry"], "Mira Laundry", "Overhead", "Mira Laundry"),
     (["tomoro coffee", "tomoro"], "Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
@@ -1923,7 +1923,11 @@ _OBJEK_VENDOR_RULES = [
     (["tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
     (["samsul padli"], "Bayar Mess Karyawan", "Overhead", "Samsul Padli"),
     (["muhammad zulfadli"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Zulfadli"),
-    (["muhammad umar al-khatib", "muhammad umar al khatib"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Umar Al-Khatib"),
+    (["muhammad umar al-khatib", "muhammad umar al khatib", "muhammad umar"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Umar Al-Khatib"),
+    (["angga eka"], "Angga Eka", "Belanja Assets", "Angga Eka"),
+    (["asrul yusuf"], "Asrul Yusuf", "Belanja Bahan", "Asrul Yusuf"),
+    (["dapoer ibu fenny", "dapur ibu fenny"], "Dapoer Ibu Fenny", "Konsumsi dan Liburan", "Dapoer Ibu Fenny"),
+    (["arafat bahaswen"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Arafat Bahaswen"),
     (["shopee"], "Shopee", "Belanja Bahan", "Shopee"),
     (["saddam"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Saddam"),
     (["pt yaoya berkat sejati", "yaoya berkat sejati", "yaoya"], "Yaoya", "Belanja Bahan", "Yaoya"),
@@ -2558,9 +2562,9 @@ def run_rekon_bersih(path, output_path):
 
 _KNOWN_I_LABEL_EXACT = {
     "unresolved", "medium unresolved", "low unresolved", "suspicious",
-    "cookies kaola", "sales via edc bca", "admin fee",
+    "cookies kaola", "admin fee",
 }
-_KNOWN_I_LABEL_PREFIXES = ("solved ", "paid to ", "paid off to ")
+_KNOWN_I_LABEL_PREFIXES = ("solved ", "paid to ", "paid off to ", "sales via edc ")
 
 
 def _is_known_i_label(text):
@@ -3009,11 +3013,15 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             # sungguhan) - Kategori dipastikan Penjualan, Keterangan
             # diseragamkan, Subjek/Objek ikut arah Penjualan standar
             # (Subjek = sumber/label pembayar, Objek = rekening
-            # penerima ini sendiri).
+            # penerima ini sendiri). Keterangan Tambahan (I) JUGA
+            # ditulis label yang sama - tanpa ini, Objek (rekening
+            # sendiri, mis. "BCA-887") salah kena "Unrecognized Tenant"
+            # dari pass label akhir kalau file ini diproses ulang.
             ws_t.cell(row=t.row, column=3, value="Penjualan")
             ws_t.cell(row=t.row, column=2, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
+            ws_t.cell(row=t.row, column=9, value="Sales via EDC BCA")
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("bca"):
             # BCA juga menerima penjualan via EDC BCA sendiri (di luar
@@ -3026,6 +3034,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=2, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
+            ws_t.cell(row=t.row, column=9, value="Sales via EDC BCA")
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("bri"):
             # BRI HANYA menerima penjualan via EDC BRI (BEDA dari BCA
@@ -3039,6 +3048,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=2, value="Sales via EDC BRI")
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BRI")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
+            ws_t.cell(row=t.row, column=9, value="Sales via EDC BRI")
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("kas"):
             # Penjualan yang tercatat DI buku kas sendiri (bukan
