@@ -2190,7 +2190,13 @@ def _cleanup_and_verify_sheet(ws):
        bisa saja sudah disisipkan/dihapus oleh proses /rekonlokal) dan
        ditulis sebagai NILAI STATIS (bukan formula) - supaya tetap jadi
        acuan tetap untuk verifikasi manual, tidak ikut berubah kalau
-       user mengedit sel lain di dekatnya."""
+       user mengedit sel lain di dekatnya.
+    4. Formula Saldo Kumulatif (F) di SEMUA baris transaksi ditulis
+       ULANG dari nol (pola F{row} = D{row}+E{row}+F{row-1}) - openpyxl
+       tidak otomatis menyesuaikan referensi formula saat insert_rows/
+       delete_rows di langkah 1/1b di atas, jadi formula lama bisa
+       SALAH REFERENSI baris (menyebabkan #VALUE! terutama saat user
+       sorting/filter data)."""
     header = [ws.cell(row=1, column=c).value for c in range(1, 9)]
     if header != _STANDARD_HEADER:
         return  # bukan sheet rekening berformat standar, jangan diapa-apakan
@@ -2299,6 +2305,33 @@ def _cleanup_and_verify_sheet(ws):
         ws.cell(row=footer_rows["total kredit"], column=5, value=total_kredit)
     if "saldo akhir" in footer_rows:
         ws.cell(row=footer_rows["saldo akhir"], column=6, value=saldo_akhir_value)
+
+    # 4. Perbaiki formula Saldo Kumulatif (F) di SEMUA baris transaksi -
+    # openpyxl TIDAK otomatis menyesuaikan referensi formula saat baris
+    # disisipkan/dihapus (beda dari Excel manual saat user insert/delete
+    # row lewat UI) - formula LAMA (mis. "=D2+E2+F1") bisa jadi SALAH
+    # REFERENSI baris setelah operasi insert_rows/delete_rows di langkah
+    # 1/1b di atas, menyebabkan #VALUE! error kalau baris yang
+    # direferensikan sekarang berisi teks (header/footer) bukan angka -
+    # apalagi kalau user lalu SORTING/FILTER data, error itu ikut
+    # bergeser dan makin membingungkan. Ditulis ULANG dari NOL mengikuti
+    # pola standar F{row} = D{row}+E{row}+F{row-1} untuk SEMUA baris
+    # transaksi (BUKAN baris Saldo Awal Bulan/footer, yang sudah
+    # ditangani terpisah di atas sebagai nilai statis) - dijalankan
+    # PALING AKHIR, setelah nomor baris benar-benar final.
+    for r in range(2, ws.max_row + 1):
+        b_lower = str(ws.cell(row=r, column=2).value or "").strip().lower()
+        c_lower = str(ws.cell(row=r, column=3).value or "").strip().lower()
+        if c_lower == "saldo awal bulan":
+            continue
+        if (b_lower in ("saldo awal", "saldo akhir")
+                or b_lower.startswith("total debit") or b_lower.startswith("total kredit")):
+            continue
+        d = ws.cell(row=r, column=4).value
+        e = ws.cell(row=r, column=5).value
+        if d is None and e is None:
+            continue  # baris kosong (seharusnya sudah tersaring di langkah 1, jaga-jaga)
+        ws.cell(row=r, column=6, value=f"=D{r}+E{r}+F{r - 1}")
 
 
 _OFFICIAL_LAYER1_CATEGORIES = [
@@ -2521,6 +2554,33 @@ def run_rekon_bersih(path, output_path):
 
     wb.save(output_path)
     return {"n_subjek_objek_dilengkapi": n_subjek_objek_dilengkapi, "n_kategori_dilengkapi": n_kategori_dilengkapi}
+
+
+_KNOWN_I_LABEL_EXACT = {
+    "unresolved", "medium unresolved", "low unresolved", "suspicious",
+    "cookies kaola", "sales via edc bca",
+}
+_KNOWN_I_LABEL_PREFIXES = ("solved ", "paid to ", "paid off to ")
+
+
+def _is_known_i_label(text):
+    """True kalau `text` (Keterangan Tambahan/kolom I) SUDAH cocok pola
+    label sistem yang dikenal ('Unresolved', 'Solved X to Y', 'Paid to
+    X', dst) - dipakai di run_rekon_lokal SEBAGAI TAMBAHAN atas cek
+    "masih sama dengan t.ket" untuk menentukan baris "sudah dapat label
+    bermakna". PENTING: cek "masih sama dengan t.ket" SENDIRIAN tidak
+    cukup untuk file yang di-upload ULANG setelah pernah diproses
+    /rekonlokal sebelumnya - baris yang TIDAK ketemu match lagi di run
+    BARU ini akan punya t.ket = 'Unresolved'/'Solved ...' (dibaca dari
+    file yang SUDAH berlabel itu), sehingga current_i == t.ket (SAMA
+    PERSIS, karena TIDAK ADA pass baru yang menulis ulang) dan salah
+    dikira "belum tersentuh". Fungsi ini menangkap kasus itu."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if t in _KNOWN_I_LABEL_EXACT:
+        return True
+    return any(t.startswith(p) for p in _KNOWN_I_LABEL_PREFIXES)
 
 
 def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
@@ -3230,8 +3290,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
         current_i = ws_t.cell(row=t.row, column=9).value
-        if (current_i or "") != (t.ket or ""):
-            continue  # sudah dapat label dari pass lain, jangan disentuh
+        if _is_known_i_label(current_i) or (current_i or "") != (t.ket or ""):
+            continue  # sudah dapat label dari pass lain (run ini ATAU run sebelumnya), jangan disentuh
         objek_sekarang = (ws_t.cell(row=t.row, column=8).value or "").strip()
         if not objek_sekarang or objek_sekarang == "-":
             continue  # tenant kosong - biarkan kosong
