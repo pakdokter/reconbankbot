@@ -3015,6 +3015,31 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
             penjualan_fixed_ids.add(id(t))
+        elif kat == "penjualan" and t.sheet.strip().lower().startswith("bca"):
+            # BCA juga menerima penjualan via EDC BCA sendiri (di luar
+            # Grabfood/Shopeefood yang sudah ditangani cabang khusus di
+            # atas, dan di luar pola "Stoa Space" yang menangkap kasus
+            # Kategori BELUM Penjualan) - aturan generik sejajar dengan
+            # BRI di bawah, supaya SEMUA transaksi Penjualan di BCA
+            # konsisten dapat label "Sales via EDC BCA" terlepas ada
+            # tidaknya teks "Stoa Space" spesifik.
+            ws_t.cell(row=t.row, column=2, value="Sales via EDC BCA")
+            ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
+            ws_t.cell(row=t.row, column=8, value=t.sheet)
+            penjualan_fixed_ids.add(id(t))
+        elif kat == "penjualan" and t.sheet.strip().lower().startswith("bri"):
+            # BRI HANYA menerima penjualan via EDC BRI (BEDA dari BCA
+            # yang JUGA menerima Shopeefood/Grabfood via payment
+            # gateway, sudah ditangani cabang Grab/Shopeefood di atas
+            # yang dicek LEBIH DULU) - user menegaskan SEMUA transaksi
+            # Penjualan yang masuk ke rekening BRI genuinely EDC BRI,
+            # jadi TIDAK perlu kata kunci spesifik seperti "Stoa Space"
+            # untuk BCA - langsung diseragamkan begitu Kategori-nya
+            # Penjualan dan rekeningnya BRI, konsisten dengan pola BCA.
+            ws_t.cell(row=t.row, column=2, value="Sales via EDC BRI")
+            ws_t.cell(row=t.row, column=7, value="Sales via EDC BRI")
+            ws_t.cell(row=t.row, column=8, value=t.sheet)
+            penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("kas"):
             # Penjualan yang tercatat DI buku kas sendiri (bukan
             # settlement payment gateway seperti Grabfood/Shopeefood) -
