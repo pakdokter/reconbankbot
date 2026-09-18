@@ -1796,6 +1796,7 @@ BCA_MATCH_FILL = PatternFill("solid", fgColor="BDD7EE")  # biru
 JAGO_MATCH_FILL = PatternFill("solid", fgColor="FCD9B6")  # orange
 BRI_MATCH_FILL = PatternFill("solid", fgColor="FFF2A8")  # kuning
 REKONLOKAL_UNMATCHED_FILL = PatternFill("solid", fgColor="FFC7CE")  # merah
+REKONLOKAL_MEDIUM_CONFIDENCE_FILL = PatternFill("solid", fgColor="FFE5E8")  # merah shade lebih muda, untuk match confidence Medium
 REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="8B0000")  # merah darah, mencolok
 
 # Warna highlight yang PUNYA ARTI KHUSUS (arah transfer/belum direkon/
@@ -1809,7 +1810,7 @@ REKONLOKAL_SUSPECT_CATEGORY_FILL = PatternFill("solid", fgColor="8B0000")  # mer
 # tidak kena di baris lain kategori yang SAMA, cuma karena baris itu
 # kebetulan sudah punya warna latar dari sumbernya).
 _MEANINGFUL_HIGHLIGHT_HEXES = {
-    "00BDD7EE", "00FCD9B6", "00FFF2A8", "00FFC7CE", "008B0000",
+    "00BDD7EE", "00FCD9B6", "00FFF2A8", "00FFC7CE", "008B0000", "00FFE5E8",
 }
 
 # Highlight berdasarkan GRUP KATEGORI Layer 1 - dipakai di /rekonlokal
@@ -2624,7 +2625,18 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_r.cell(row=penerima.row, column=9, value=solved_note)
         ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {penerima.sheet}")
         ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {pengirim.sheet}")
-        fill = _bank_group_fill(penerima.sheet)
+        # Confidence Medium (cocok tapi tidak 100% pasti - selisih
+        # nominal/tanggal masih dalam toleransi, bukan match persis) -
+        # dihighlight merah shade LEBIH MUDA daripada highlight "belum
+        # direkon" (FFC7CE), MENGGANTIKAN warna grup bank tujuan biasa -
+        # supaya baris ini tetap kelihatan beda/perlu perhatian ekstra
+        # dibanding match High yang sudah pasti, tapi TIDAK disamakan
+        # semencolok "belum direkon" yang genuinely belum ketemu sama
+        # sekali.
+        if m.confidence == "Medium":
+            fill = REKONLOKAL_MEDIUM_CONFIDENCE_FILL
+        else:
+            fill = _bank_group_fill(penerima.sheet)
         if fill is not None:
             for c in range(1, 10):
                 ws_p.cell(row=pengirim.row, column=c).fill = fill
