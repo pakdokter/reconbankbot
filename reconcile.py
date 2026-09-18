@@ -2558,7 +2558,7 @@ def run_rekon_bersih(path, output_path):
 
 _KNOWN_I_LABEL_EXACT = {
     "unresolved", "medium unresolved", "low unresolved", "suspicious",
-    "cookies kaola", "sales via edc bca",
+    "cookies kaola", "sales via edc bca", "admin fee",
 }
 _KNOWN_I_LABEL_PREFIXES = ("solved ", "paid to ", "paid off to ")
 
@@ -3049,7 +3049,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=7, value="Penjualan Cash")
             ws_t.cell(row=t.row, column=8, value=t.sheet)
         elif kat == "biaya admin bank":
-            ws_t.cell(row=t.row, column=9, value="-")
+            ws_t.cell(row=t.row, column=9, value="Admin Fee")
+            penjualan_fixed_ids.add(id(t))
 
     # Rename kategori LEGACY (nama lama/pendek) ke nama resmi kontrak
     # kategori terbaru - transformasi yang MEMANG disengaja, konsisten
