@@ -358,7 +358,7 @@ async def handle_rekonlokal_document(update: Update, context: ContextTypes.DEFAU
     context.user_data["rekonlokal_mode"] = False
     context.user_data["rekonlokal_files"] = []
     caption = (
-        f"Transfer cocok: {result['n_high']} high, {result['n_medium']} medium. "
+        f"Transfer cocok: {result['n_high']} high, {result['n_medium']} medium, {result['n_low']} low. "
         f"Belum direkon: {result['n_belum_rekon']}. "
         f"Kategori mencurigakan: {result['n_kategori_mencurigakan']}."
     )
