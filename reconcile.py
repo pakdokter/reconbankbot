@@ -915,6 +915,28 @@ def find_matches(all_txns, sheet_names):
     # untuk dicocokkan, jadi kalau ikut diproses selalu nyangkut sebagai
     # "Needs manual verification" tanpa nilai informasi apapun
     transfers = [t for t in all_txns if t.is_transfer and t.nominal != 0]
+    # Urutkan transfers supaya src yang PUNYA kandidat match SEMPURNA
+    # (nominal persis sama + tanggal persis sama) diproses LEBIH DULU -
+    # tanpa ini, src yang diproses lebih awal (urutan baris di file, BUKAN
+    # relevansi) bisa "mencuri" kandidat terbaik dari src LAIN yang
+    # SEBENARNYA lebih cocok dengan kandidat itu (mis. src A tanggal 13
+    # diproses duluan, ambil kandidat tanggal 18 karena itu yang terdekat
+    # SAAT ITU - padahal src B tanggal 18 yang genuinely match SEMPURNA
+    # dengan kandidat tanggal 18 itu, jadi kebagian sisa yang lebih jauh).
+    # Src TANPA kandidat sempurna tetap diproses (urutan asli dipertahankan,
+    # sort Python stabil), cuma belakangan - supaya tidak menghalangi src
+    # LAIN yang punya kandidat sempurna mendapatkan haknya lebih dulu.
+    def _has_exact_candidate(src):
+        for t in transfers:
+            if t is src or t.sheet == src.sheet or t.nominal == 0:
+                continue
+            if (t.nominal > 0) == (src.nominal > 0):
+                continue
+            if abs(abs(t.nominal) - abs(src.nominal)) == 0 and days_between(src.date, t.date) == 0:
+                return True
+        return False
+
+    transfers = sorted(transfers, key=lambda s: not _has_exact_candidate(s))
     matched_dst_ids = set()
     consumed_ids = set()  # baik src maupun dst yang sudah punya pasangan
     results = []
@@ -1871,6 +1893,33 @@ def _bank_group_fill(sheet_title):
     return None
 
 
+def _display_account_name(sheet_title):
+    """Nama rekening untuk DITULIS ke sel Subjek/Objek - "Kas Buku"/
+    "Kas/Buku" (nama rekening kas internal, hasil tebakan
+    _infer_account_name atau filename_hint) diseragamkan jadi "Kas
+    Kasir" untuk konsistensi penamaan (permintaan eksplisit user),
+    rekening lain (BRI-507/BCA-887/dst) dipakai apa adanya. HANYA
+    dipakai di titik PENULISAN ke sel - t.sheet sendiri (dipakai untuk
+    matching/deduplikasi/key dict) TIDAK diubah, supaya tidak
+    mengganggu logika pencocokan yang bergantung pada identitas asli."""
+    if sheet_title.strip().lower().startswith("kas"):
+        return "Kas Kasir"
+    return sheet_title
+
+
+def _settled_to_bank_label(sheet_title):
+    """Label 'Settled to <bank>' untuk transaksi Penjualan - nama bank
+    diekstrak dari identitas rekening (token pertama sebelum '-'/'(',
+    di-uppercase, mis. 'BRI-507' -> 'BRI', 'BCA-887' -> 'BCA'); untuk
+    rekening kas (bukan bank sungguhan) dipakai _display_account_name
+    ('Kas Kasir') apa adanya, bukan 'Settled to Kas Kasir' yang janggal."""
+    disp = _display_account_name(sheet_title)
+    if disp == "Kas Kasir":
+        return disp
+    bank_prefix = sheet_title.split("-")[0].split("(")[0].strip().upper()
+    return f"Settled to {bank_prefix}"
+
+
 # Vendor Belanja Bahan/Kemasan yang keterangannya sering ditulis beda-
 # beda di sumber (typo/singkatan/variasi ejaan) - diseragamkan di
 # /rekonlokal jadi SATU nama baku per vendor, sekaligus dipastikan
@@ -2566,7 +2615,7 @@ _KNOWN_I_LABEL_EXACT = {
     "unresolved", "medium unresolved", "low unresolved", "suspicious",
     "cookies kaola", "admin fee",
 }
-_KNOWN_I_LABEL_PREFIXES = ("solved ", "paid to ", "paid off to ", "sales via edc ")
+_KNOWN_I_LABEL_PREFIXES = ("solved ", "paid to ", "paid off to ", "sales via edc ", "settled to ")
 
 
 def _is_known_i_label(text):
@@ -2673,11 +2722,23 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
     for t in all_txns:
         if t.is_opening:
             continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        # "Kas Buku"/"Kas/Buku" (rekening kas internal, dalam bentuk
+        # apapun ia ditulis - beda kapitalisasi/tanda baca) diseragamkan
+        # jadi "Kas Kasir" di Subjek MAUPUN Objek untuk konsistensi
+        # penamaan (permintaan eksplisit user) - dicek LEBIH DULU
+        # sebelum EMPLOYEE_ALIASES, supaya tidak keduluan aturan lain.
         objek_asli = (t.objek or "").strip()
+        subjek_asli = (t.subjek or "").strip()
+        _kas_buku_re = re.compile(r"^kas\s*/?\s*buku$", re.IGNORECASE)
+        if subjek_asli and _kas_buku_re.match(subjek_asli):
+            wb_t[sheet_t].cell(row=t.row, column=7, value="Kas Kasir")
+        if objek_asli and _kas_buku_re.match(objek_asli):
+            wb_t[sheet_t].cell(row=t.row, column=8, value="Kas Kasir")
+            continue  # sudah ditangani, lewati pass EMPLOYEE_ALIASES di bawah untuk Objek ini
         if not objek_asli or objek_asli == "-":
             continue
         nama_lengkap = EMPLOYEE_ALIASES.get(objek_asli.lower())
-        wb_t, sheet_t = name_to_real[t.sheet]
         if nama_lengkap:
             wb_t[sheet_t].cell(row=t.row, column=8, value=nama_lengkap)
         elif objek_asli != objek_asli.upper():
@@ -2713,8 +2774,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         wb_r, sheet_r = name_to_real[penerima.sheet]
         ws_p = wb_p[sheet_p]
         ws_r = wb_r[sheet_r]
-        ws_p.cell(row=pengirim.row, column=8, value=penerima.sheet)
-        ws_r.cell(row=penerima.row, column=7, value=pengirim.sheet)
+        ws_p.cell(row=pengirim.row, column=8, value=_display_account_name(penerima.sheet))
+        ws_r.cell(row=penerima.row, column=7, value=_display_account_name(pengirim.sheet))
         # Kategori (C) dipastikan benar - transaksi ini SUDAH terbukti
         # transfer internal matched, terlepas dari kategori asalnya
         # (mis. 'Transfer Lainnya'/'New Kategori' sebelum ketemu
@@ -2739,11 +2800,11 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         elif m.confidence == "Low":
             note = "Low Unresolved"
         else:
-            note = f"Solved {pengirim.sheet} to {penerima.sheet}"
+            note = f"Solved {_display_account_name(pengirim.sheet)} to {_display_account_name(penerima.sheet)}"
         ws_p.cell(row=pengirim.row, column=9, value=note)
         ws_r.cell(row=penerima.row, column=9, value=note)
-        ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {penerima.sheet}")
-        ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {pengirim.sheet}")
+        ws_p.cell(row=pengirim.row, column=2, value=f"Transfer ke {_display_account_name(penerima.sheet)}")
+        ws_r.cell(row=penerima.row, column=2, value=f"Transfer dari {_display_account_name(pengirim.sheet)}")
         # Confidence Medium/Low (cocok tapi tidak 100% pasti - selisih
         # nominal/tanggal masih dalam toleransi, bukan match persis) -
         # dihighlight merah shade LEBIH MUDA daripada highlight "belum
@@ -2832,7 +2893,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         if "setoran" not in (t.desc or "").lower():
             continue
         wb_t, sheet_t = name_to_real[t.sheet]
-        wb_t[sheet_t].cell(row=t.row, column=2, value=f"Setoran {t.sheet}")
+        wb_t[sheet_t].cell(row=t.row, column=2, value=f"Setoran {_display_account_name(t.sheet)}")
 
     # Baris hasil pemisahan Fliptech (split_fliptech_combined_rows) -
     # dikenali dari CIRI KHASNYA (Kategori persis 'Biaya Admin Bank'/
@@ -2989,14 +3050,14 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
                 or "grabfood" in desc_k or "visionet" in ket_k or "grabfood" in ket_k):
             ws_t.cell(row=t.row, column=3, value="Penjualan Grabfood")
             ws_t.cell(row=t.row, column=7, value="Grab Merchant")
-            ws_t.cell(row=t.row, column=8, value=t.sheet)
+            ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
             ws_t.cell(row=t.row, column=9, value="-")
             penjualan_fixed_ids.add(id(t))
         elif (kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay"
                 or "shopeefood" in desc_k or "airpay" in ket_k or "shopeefood" in ket_k):
             ws_t.cell(row=t.row, column=3, value="Penjualan Shopeefood")
             ws_t.cell(row=t.row, column=7, value="Shopeefood Merchant")
-            ws_t.cell(row=t.row, column=8, value=t.sheet)
+            ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
             ws_t.cell(row=t.row, column=9, value="-")
             penjualan_fixed_ids.add(id(t))
         elif "diva nispi yolanda" in objek_k:
@@ -3022,8 +3083,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=3, value="Penjualan")
             ws_t.cell(row=t.row, column=2, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
-            ws_t.cell(row=t.row, column=8, value=t.sheet)
-            ws_t.cell(row=t.row, column=9, value="Sales via EDC BCA")
+            ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
+            ws_t.cell(row=t.row, column=9, value=_settled_to_bank_label(t.sheet))
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("bca"):
             # BCA juga menerima penjualan via EDC BCA sendiri (di luar
@@ -3035,8 +3096,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             # tidaknya teks "Stoa Space" spesifik.
             ws_t.cell(row=t.row, column=2, value="Sales via EDC BCA")
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BCA")
-            ws_t.cell(row=t.row, column=8, value=t.sheet)
-            ws_t.cell(row=t.row, column=9, value="Sales via EDC BCA")
+            ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
+            ws_t.cell(row=t.row, column=9, value=_settled_to_bank_label(t.sheet))
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("bri"):
             # BRI HANYA menerima penjualan via EDC BRI (BEDA dari BCA
@@ -3049,8 +3110,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             # Penjualan dan rekeningnya BRI, konsisten dengan pola BCA.
             ws_t.cell(row=t.row, column=2, value="Sales via EDC BRI")
             ws_t.cell(row=t.row, column=7, value="Sales via EDC BRI")
-            ws_t.cell(row=t.row, column=8, value=t.sheet)
-            ws_t.cell(row=t.row, column=9, value="Sales via EDC BRI")
+            ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
+            ws_t.cell(row=t.row, column=9, value=_settled_to_bank_label(t.sheet))
             penjualan_fixed_ids.add(id(t))
         elif kat == "penjualan" and t.sheet.strip().lower().startswith("kas"):
             # Penjualan yang tercatat DI buku kas sendiri (bukan
@@ -3059,7 +3120,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             # penjualan tunai KE kas - Subjek = "Penjualan Cash", Objek
             # = buku kas ini sendiri (t.sheet, mis. "Kas/Buku").
             ws_t.cell(row=t.row, column=7, value="Penjualan Cash")
-            ws_t.cell(row=t.row, column=8, value=t.sheet)
+            ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
         elif kat == "biaya admin bank":
             ws_t.cell(row=t.row, column=9, value="Admin Fee")
             penjualan_fixed_ids.add(id(t))
@@ -3134,7 +3195,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         wb_t, sheet_t = name_to_real[t.sheet]
         ws_t = wb_t[sheet_t]
         ws_t.cell(row=t.row, column=9, value=ws_t.cell(row=t.row, column=2).value)
-        ws_t.cell(row=t.row, column=2, value=f"Setoran {t.sheet}")
+        ws_t.cell(row=t.row, column=2, value=f"Setoran {_display_account_name(t.sheet)}")
 
     # Vendor Belanja Bahan/Kemasan yang sering ditulis beda-beda di
     # sumber - diseragamkan jadi satu nama baku, Kategori dipastikan
@@ -3335,6 +3396,15 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             continue  # tenant kosong - biarkan kosong
         if objek_sekarang.lower() in _known_tenant_names:
             ws_t.cell(row=t.row, column=9, value=f"Paid Off to {objek_sekarang}")
+        elif (t.effective_kategori or "").strip().lower() in (
+                "penjualan", "penjualan shopeefood", "penjualan grabfood"):
+            # Fallback: transaksi Penjualan APAPUN yang belum tertangani
+            # pass spesifik manapun di atas (mis. Grabfood/Shopeefood
+            # settlement, atau bank selain BRI/BCA) - TETAP TIDAK boleh
+            # dianggap soal "tenant" (Objek di sini adalah rekening
+            # PENERIMA, bukan tenant/vendor) - label "Settled to <bank>"
+            # sesuai permintaan user, bukan "Unrecognized Tenant".
+            ws_t.cell(row=t.row, column=9, value=_settled_to_bank_label(t.sheet))
         else:
             ws_t.cell(row=t.row, column=9, value="Unrecognized Tenant")
 
