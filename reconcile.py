@@ -776,15 +776,62 @@ def last_data_row(ws):
 _STANDARD_HEADER = ["Tanggal", "Keterangan Transaksi", "Kategori Transaksi", "Debit", "Kredit",
                      "Saldo Kumulatif", "Subjek Transaksi", "Objek Transaksi"]
 
+# Beberapa versi bot konversi statement bank menulis nama kolom header
+# yang beda (mis. Bahasa Inggris "Items / Activities" alih-alih
+# "Keterangan Transaksi") walau STRUKTUR datanya (posisi kolom) sama
+# persis - supaya file begini TETAP dikenali (bukan cuma soal cocok/
+# tidak cocok TEKS header persis), tiap posisi kolom boleh cocok
+# beberapa varian teks yang dikenal, bukan cuma satu nilai baku.
+_STANDARD_HEADER_ALIASES = {
+    1: {"keterangan transaksi", "items / activities", "items/activities",
+        "item or activity", "item / activity"},
+}
+
+# Nama header Kolom B yang dipakai bot konversi (bankbot) VERSI TERBARU
+# saat ini - lihat _STANDARD_HEADER_ALIASES di atas untuk daftar varian
+# LAMA yang masih diterima saat MEMBACA, tapi saat MENULIS balik (output
+# rekonlokal) header selalu diseragamkan ke nilai ini.
+_CURRENT_HEADER_KOLOM_B = "Items / Activities"
+
+
+def _normalize_header_kolom_b(ws):
+    """Kalau header Kolom B sheet ini masih pakai varian LAMA ("Keterangan
+    Transaksi" dkk, lihat _STANDARD_HEADER_ALIASES[1]) - tulis ulang jadi
+    header versi TERBARU (_CURRENT_HEADER_KOLOM_B), supaya file lama yang
+    diupload user otomatis ikut header terbaru bankbot begitu diproses
+    /rekonlokal. TIDAK menyentuh apapun kalau header sudah versi terbaru
+    ATAU sudah bukan salah satu varian yang dikenal sama sekali (biar
+    tidak salah timpa header yang genuinely bukan sheet rekening)."""
+    cell = ws.cell(row=1, column=2)
+    current = (cell.value or "").strip().lower() if isinstance(cell.value, str) else cell.value
+    if current in _STANDARD_HEADER_ALIASES[1] and current != _CURRENT_HEADER_KOLOM_B.lower():
+        cell.value = _CURRENT_HEADER_KOLOM_B
+
+
+# Placeholder eksplisit yang ditulis bot konversi (bankbot) terbaru di
+# Objek/Subjek saat fix_subjek_objek_collisions()-nya sendiri mendeteksi
+# Subjek==Objek pada baris mentah tapi TIDAK bisa menyimpulkan rekening
+# lawan sebenarnya - sinyal "lawan transaksi ini genuinely tidak
+# diketahui", BUKAN sekadar Subjek/Objek kosong biasa.
+_UNIDENTIFIED_ACCOUNT_PLACEHOLDER = "rekening lain (belum teridentifikasi)"
+
 
 def _looks_like_account_sheet(ws):
     """True kalau sheet ini berformat standar 9-kolom (Tanggal/
     Keterangan/Kategori/Debit/Kredit/Saldo/Subjek/Objek/Ket Tambahan) -
     dicek dari 8 kolom header pertama. Dipakai untuk fitur yang menerima
     file rekening BEBAS (bukan file Rekonsiliasi multi-sheet biasa),
-    supaya sheet non-rekening (kalau ada) tidak ikut diproses."""
+    supaya sheet non-rekening (kalau ada) tidak ikut diproses. Perbandingan
+    per kolom TOLERAN terhadap varian nama header yang dikenal (lihat
+    _STANDARD_HEADER_ALIASES) - yang penting STRUKTUR (urutan/posisi)
+    kolomnya sama, bukan teks persis header-nya."""
     header = [ws.cell(row=1, column=c).value for c in range(1, len(_STANDARD_HEADER) + 1)]
-    return header == _STANDARD_HEADER
+    for idx, (actual, expected) in enumerate(zip(header, _STANDARD_HEADER)):
+        actual_norm = (actual or "").strip().lower() if isinstance(actual, str) else actual
+        allowed = _STANDARD_HEADER_ALIASES.get(idx, {expected.lower()})
+        if actual_norm not in allowed:
+            return False
+    return True
 
 
 def resolve_account_sheet(hint, sheet_names):
@@ -2783,6 +2830,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
     name_to_real = {}  # nama rekening -> (workbook, nama sheet ASLI)
     for wb, sheets, tag in ((wb1, sheets1, "1"), (wb2, sheets2, "2")):
         for sn in sheets:
+            _normalize_header_kolom_b(wb[sn])
             split_fliptech_combined_rows(wb[sn])
             txns, _ = read_account_sheet(wb[sn])
             akun = _infer_account_name(txns, filename_hint=filename_hints[tag]) or f"{sn} ({tag})"
@@ -2927,6 +2975,23 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         wb_r, sheet_r = name_to_real[penerima.sheet]
         ws_p = wb_p[sheet_p]
         ws_r = wb_r[sheet_r]
+        # Tangkap Objek/Subjek ASLI (sebelum ditimpa nama rekening lawan
+        # hasil matching di bawah) - kalau salah satunya persis
+        # "Rekening Lain (Belum Teridentifikasi)" (placeholder eksplisit
+        # dari bot konversi terbaru, ditulis saat bankbot sendiri gagal
+        # mengenali lawan transaksi - lihat fix_subjek_objek_collisions
+        # di bankbot), itu SINYAL EKSPLISIT dari bankbot bahwa lawan
+        # transaksi ini TIDAK DIKETAHUI, walau kebetulan cocok nominal+
+        # tanggal dengan transaksi lain (bisa jadi kebetulan, bukan
+        # genuinely pasangan yang sama) - jangan pernah dianggap "Solved"
+        # tanpa embel-embel, tetap wajib diverifikasi manual walau
+        # confidence pencocokannya High.
+        _objek_asli_pengirim = (ws_p.cell(row=pengirim.row, column=8).value or "").strip().lower()
+        _subjek_asli_penerima = (ws_r.cell(row=penerima.row, column=7).value or "").strip().lower()
+        _perlu_verifikasi_rekening_lain = (
+            _objek_asli_pengirim == _UNIDENTIFIED_ACCOUNT_PLACEHOLDER
+            or _subjek_asli_penerima == _UNIDENTIFIED_ACCOUNT_PLACEHOLDER
+        )
         ws_p.cell(row=pengirim.row, column=8, value=_display_account_name(penerima.sheet))
         ws_r.cell(row=penerima.row, column=7, value=_display_account_name(pengirim.sheet))
         # Kategori (C) dipastikan benar - transaksi ini SUDAH terbukti
@@ -2952,6 +3017,14 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             note = "Medium Unresolved"
         elif m.confidence == "Low":
             note = "Low Unresolved"
+        elif _perlu_verifikasi_rekening_lain:
+            # Confidence High secara nominal/tanggal, TAPI salah satu sisi
+            # asalnya "Rekening Lain (Belum Teridentifikasi)" dari bankbot
+            # - jangan ditulis "Solved" polos (menyesatkan, seolah sudah
+            # 100% terverifikasi), tetap tandai wajib verifikasi manual.
+            note = (f"Solved {_display_account_name(pengirim.sheet)} to "
+                    f"{_display_account_name(penerima.sheet)} (Perlu Verifikasi Manual - "
+                    "Objek/Subjek asal tidak teridentifikasi bankbot)")
         else:
             note = f"Solved {_display_account_name(pengirim.sheet)} to {_display_account_name(penerima.sheet)}"
         ws_p.cell(row=pengirim.row, column=9, value=note)
@@ -2967,7 +3040,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # semencolok "belum direkon" yang genuinely belum ketemu sama
         # sekali. Low dan Medium pakai warna sama (beda ditandai lewat
         # teks "Low Unresolved" vs "Medium Unresolved" di kolom I).
-        if m.confidence in ("Medium", "Low"):
+        if m.confidence in ("Medium", "Low") or _perlu_verifikasi_rekening_lain:
             fill = REKONLOKAL_MEDIUM_CONFIDENCE_FILL
         else:
             fill = _bank_group_fill(penerima.sheet)
