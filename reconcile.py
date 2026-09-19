@@ -1992,7 +1992,7 @@ _OBJEK_VENDOR_RULES = [
     (["shopeepay", "shopee pay"], "Belanja Bahan Shopee", "Belanja Bahan", "Shopee"),
     (["iklan tiktok", "tiktok ads", "tiktok"], "TikTok", "Marketing", "TikTok"),
     (["iklan facebook", "facebook ads", "fb ads", "meta ads", "facebook"], "MetaAds", "Marketing", "MetaAds"),
-    (["rasbani"], "Konsumsi Internal Waroeng Rasbani", "Konsumsi dan Liburan", "Waroeng Rasbani"),
+    (["rasbani", "waroeng ra"], "Konsumsi Internal Waroeng Rasbani", "Konsumsi dan Liburan", "Waroeng Rasbani"),
     (["biaya transfer keluar biaya"], "Biaya Transfer Keluar", "Biaya Admin Bank", "Biaya Admin Bank"),
     (["adobe"], "Adobe", "Subscription", "Adobe"),
     (["ace team hq i", "ace team"], "Rapat di Ace Team", "Pengeluaran Pribadi", "Ace Team"),
@@ -2008,7 +2008,7 @@ _OBJEK_VENDOR_RULES = [
     (["muhammad umar al-khatib", "muhammad umar al khatib", "muhammad umar"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Umar Al-Khatib"),
     (["angga eka"], "Furniture", "Belanja Assets", "Angga Eka"),
     (["asrul yusuf"], "Belanja Bahan Asrul Yusuf", "Belanja Bahan", "Asrul Yusuf"),
-    (["dapoer ibu fenny", "dapur ibu fenny"], "Konsumsi Internal Dapoer Ibu Fenny", "Konsumsi dan Liburan", "Dapoer Ibu Fenny"),
+    (["dapoer ibu fenny", "dapur ibu fenny", "dapoer ibu"], "Konsumsi Internal Dapoer Ibu Fenny", "Konsumsi dan Liburan", "Dapoer Ibu Fenny"),
     (["arafat bahaswen"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Arafat Bahaswen"),
     (["shopee"], "Belanja Bahan Shopee", "Belanja Bahan", "Shopee"),
     (["saddam"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Saddam"),
@@ -2019,14 +2019,28 @@ _OBJEK_VENDOR_RULES = [
     # treatment-nya dengan vendor bahan bangunan lain di atas.
     (["mitra10", "mitra 10"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Mitra10 Bangunan"),
     (["depo bangunan"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Depo Bangunan"),
+    # ENTRY BARU dari feedback Kolom J - MAYAR = platform pembayaran
+    # pelatihan/kursus, dikategorikan Riset dan Development sesuai
+    # kategori "pelatihan/training" yang sudah ada di CATEGORY_OVERRIDE_RULES.
+    (["mayar"], "Pembayaran Pelatihan via Mayar", "Riset dan Development", "Mayar"),
+    # ENTRY BARU: tenant F&B untuk konsumsi internal (dikonfirmasi user
+    # dari feedback Kolom J).
+    (["bakso moro"], "Konsumsi Internal Bakso Moro", "Konsumsi dan Liburan", "Bakso Moro"),
+    (["ankara roo"], "Konsumsi Internal Ankara Roo", "Konsumsi dan Liburan", "Ankara Roo"),
+    (["zupa zupa"], "Konsumsi Internal Zupa Zupa", "Konsumsi dan Liburan", "Zupa Zupa"),
 ]
 
 
 def _objek_vendor_info(t):
-    """Sama seperti _kas_buku_vendor_info, tapi mengecek kolom Objek
-    (bukan Keterangan) terhadap _OBJEK_VENDOR_RULES. Return
-    (keterangan_baru, kategori_baru, objek_baru) atau None."""
-    text = (t.objek or "").lower()
+    """Sama seperti _kas_buku_vendor_info, tapi mengecek kolom PIHAK
+    LAWAN (bukan Keterangan) terhadap _OBJEK_VENDOR_RULES. Pihak lawan
+    ada di Objek untuk transaksi KELUAR, tapi di Subjek untuk transaksi
+    MASUK (lihat pass verifikasi identitas rekening sendiri - Objek
+    transaksi masuk sudah dipastikan rekening sendiri, jadi nama vendor/
+    pihak yang dikenal untuk transaksi masuk justru ada di Subjek).
+    Return (keterangan_baru, kategori_baru, objek_baru) atau None."""
+    counterparty = t.objek if (t.nominal or 0) < 0 else t.subjek
+    text = (counterparty or "").lower()
     for keywords, keterangan_baru, kategori_baru, objek_baru in _OBJEK_VENDOR_RULES:
         for kw in keywords:
             if re.search(r"\b" + re.escape(kw) + r"\b", text):
@@ -2593,12 +2607,21 @@ def run_rekon_bersih(path, output_path):
                     _cell.font = _recolor_font(_cell, "FFFFFF")
                 n_identitas_suspicious += 1
             elif own_col == 7 and (not other_cur or other_cur == "-"):
-                ws.cell(row=t.row, column=9, value="Suspicious")
-                for c in range(1, 10):
-                    ws.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-                    _cell = ws.cell(row=t.row, column=c)
-                    _cell.font = _recolor_font(_cell, "FFFFFF")
-                n_identitas_suspicious += 1
+                # KECUALI biaya/potongan bank (lihat komentar sejenis di
+                # /rekonlokal) - Objek kosong itu wajar untuk baris ini.
+                _fee_text = f"{t.kategori or ''} {t.desc or ''} {t.ket or ''}".lower()
+                _is_bank_fee = any(kw in _fee_text for kw in (
+                    "biaya admin", "bunga bank", "biaya transfer keluar",
+                    "pajak bank", "koreksi bunga", "interest on account",
+                    "cashback",
+                ))
+                if not _is_bank_fee:
+                    ws.cell(row=t.row, column=9, value="Suspicious")
+                    for c in range(1, 10):
+                        ws.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+                        _cell = ws.cell(row=t.row, column=c)
+                        _cell.font = _recolor_font(_cell, "FFFFFF")
+                    n_identitas_suspicious += 1
         for t in txns:
             if t.is_opening:
                 continue
@@ -2816,7 +2839,18 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             # janggal, uang keluar seharusnya diketahui tujuannya.
             # (Transaksi MASUK dengan Subjek kosong DIBIARKAN - itu wajar
             # untuk penjualan QRIS/kartu dari pelanggan anonim.)
-            perlu_verifikasi = True
+            # KECUALI biaya/potongan bank (Biaya Admin Bank, Bunga Bank,
+            # Biaya Transfer Keluar, pajak bank, dst) - transaksi ini
+            # MEMANG tidak punya "penerima" berupa pihak lawan, jadi
+            # Objek kosong itu wajar & tidak perlu ditandai Suspicious.
+            _fee_text = f"{t.kategori or ''} {t.desc or ''} {t.ket or ''}".lower()
+            _is_bank_fee = any(kw in _fee_text for kw in (
+                "biaya admin", "bunga bank", "biaya transfer keluar",
+                "pajak bank", "koreksi bunga", "interest on account",
+                "cashback",
+            ))
+            if not _is_bank_fee:
+                perlu_verifikasi = True
         if perlu_verifikasi:
             ws_t.cell(row=t.row, column=9, value="Suspicious")
             for c in range(1, 10):
@@ -3166,14 +3200,21 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # bank ini sendiri, t.sheet) - BUKAN sebaliknya seperti versi
         # lama (Subjek dibiarkan apa adanya, Objek ditulis nama
         # merchant, yang justru menggambarkan arah TERBALIK).
-        if (kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet"
+        # Grabfood/Shopeefood via payment gateway HANYA berlaku untuk
+        # transaksi MASUK (uang settlement diterima dari gateway) - kata
+        # kunci "grabfood"/"visionet" dkk juga bisa muncul di transaksi
+        # KELUAR (mis. bayar OVO untuk pesan Grabfood, sudah ditangani
+        # pass OVO terpisah jadi "Konsumsi Internal via Grabfood"), yang
+        # BUKAN penjualan dan arahnya justru terbalik - jangan sampai
+        # dipaksa jadi "Penjualan Grabfood"/"Penjualan Shopeefood".
+        if t.nominal > 0 and (kat == "penjualan grabfood" or subjek_k == "visionet" or objek_k == "visionet"
                 or "grabfood" in desc_k or "visionet" in ket_k or "grabfood" in ket_k):
             ws_t.cell(row=t.row, column=3, value="Penjualan Grabfood")
             ws_t.cell(row=t.row, column=7, value="Grab Merchant")
             ws_t.cell(row=t.row, column=8, value=_display_account_name(t.sheet))
             ws_t.cell(row=t.row, column=9, value="-")
             penjualan_fixed_ids.add(id(t))
-        elif (kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay"
+        elif t.nominal > 0 and (kat == "penjualan shopeefood" or subjek_k == "airpay" or objek_k == "airpay"
                 or "shopeefood" in desc_k or "airpay" in ket_k or "shopeefood" in ket_k):
             ws_t.cell(row=t.row, column=3, value="Penjualan Shopeefood")
             ws_t.cell(row=t.row, column=7, value="Shopeefood Merchant")
@@ -3328,8 +3369,16 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         if info is None:
             continue
         keterangan_baru, kategori_baru, objek_baru = info
+        # Nama vendor/pihak yang dikenali SELALU berarti "pihak LAWAN"
+        # transaksi ini - kolom yang benar untuk menuliskannya tergantung
+        # ARAH uang, BUKAN selalu Objek: uang KELUAR -> pihak lawan ada
+        # di Objek (8), uang MASUK -> pihak lawan ada di Subjek (7) -
+        # Objek-nya sendiri sudah dipastikan rekening sendiri oleh pass
+        # verifikasi identitas di atas dan TIDAK boleh ditimpa balik.
+        counterparty_col = 7 if t.nominal > 0 else 8
+        counterparty_raw = (t.subjek if counterparty_col == 7 else t.objek) or ""
         sudah_benar = (t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru
-                       and (objek_baru is None or (t.objek or "").strip() == objek_baru))
+                       and (objek_baru is None or counterparty_raw.strip() == objek_baru))
         if sudah_benar:
             continue  # sudah benar, tidak perlu apa-apa
         vendor_fixed_ids.add(id(t))
@@ -3345,7 +3394,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         if objek_baru is not None:
-            ws_t.cell(row=t.row, column=8, value=objek_baru)
+            ws_t.cell(row=t.row, column=counterparty_col, value=objek_baru)
 
     # Vendor yang trigger-nya dari kolom Objek (bukan Keterangan) - lihat
     # _OBJEK_VENDOR_RULES/_objek_vendor_info.
@@ -3356,8 +3405,13 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         if info is None:
             continue
         keterangan_baru, kategori_baru, objek_baru = info
+        # Sama seperti pass vendor Keterangan di atas - pihak yang
+        # dikenali ditulis ke kolom yang benar tergantung arah uang,
+        # BUKAN selalu Objek (lihat komentar pass sebelumnya).
+        counterparty_col = 7 if t.nominal > 0 else 8
+        counterparty_raw = (t.subjek if counterparty_col == 7 else t.objek) or ""
         sudah_benar = (t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru
-                       and (t.objek or "").strip() == objek_baru)
+                       and counterparty_raw.strip() == objek_baru)
         if sudah_benar:
             continue
         vendor_fixed_ids.add(id(t))
@@ -3368,7 +3422,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_t.cell(row=t.row, column=9, value=f"Paid Off to {objek_baru}")
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
-        ws_t.cell(row=t.row, column=8, value=objek_baru)
+        ws_t.cell(row=t.row, column=counterparty_col, value=objek_baru)
 
     # Tokopedia: default Kolom B "Belanja Tokopedia", KECUALI nominal
     # besar (asumsi ambang Rp2.000.000, item mahal cenderung Assets/
@@ -3621,7 +3675,13 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         current_i = ws_t.cell(row=t.row, column=9).value
         if _is_known_i_label(current_i) or (current_i or "") != (t.ket or ""):
             continue  # sudah dapat label dari pass lain (run ini ATAU run sebelumnya), jangan disentuh
-        objek_sekarang = (ws_t.cell(row=t.row, column=8).value or "").strip()
+        # Pihak lawan (calon "tenant") ada di Objek untuk transaksi
+        # KELUAR, tapi di Subjek untuk transaksi MASUK - Objek transaksi
+        # masuk sudah dipastikan rekening sendiri oleh pass verifikasi
+        # identitas di atas, jadi mengecek Objek untuk transaksi masuk
+        # akan SELALU melihat nama rekening sendiri, bukan tenant.
+        counterparty_col = 7 if t.nominal > 0 else 8
+        objek_sekarang = (ws_t.cell(row=t.row, column=counterparty_col).value or "").strip()
         if not objek_sekarang or objek_sekarang == "-":
             continue  # tenant kosong - biarkan kosong
         if objek_sekarang.lower() in _known_tenant_names:
