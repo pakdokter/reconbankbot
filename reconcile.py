@@ -37,6 +37,22 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 
 HEADER_FILL = PatternFill("solid", fgColor="1F2937")
+
+
+def _recolor_font(cell, color):
+    """Ganti warna font SAJA pada sebuah sel, PERTAHANKAN font
+    family/size/bold/italic yang sudah ada (mis. 'Arial 9' dari data
+    sumber). BUG yang ditemukan user: memakai `Font(color=...)` langsung
+    (tanpa parameter lain) membuat objek Font BARU yang reset semua
+    atribut lain ke default Excel (Calibri 11, bukan bold) - jadi setiap
+    baris yang di-highlight (Suspicious/dst) kehilangan format font
+    aslinya. Dipakai di SEMUA titik yang mewarnai font highlight, ganti
+    `cell.font = Font(color=...)` jadi `cell.font = _recolor_font(cell,
+    ...)`."""
+    f = cell.font
+    return Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic,
+                vertAlign=f.vertAlign, underline=f.underline, strike=f.strike,
+                color=color)
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 SECTION_FILL = PatternFill("solid", fgColor="E5E7EB")
 SECTION_FONT = Font(bold=True)
@@ -2573,13 +2589,15 @@ def run_rekon_bersih(path, output_path):
                 ws.cell(row=t.row, column=9, value="Suspicious")
                 for c in range(1, 10):
                     ws.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-                    ws.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+                    _cell = ws.cell(row=t.row, column=c)
+                    _cell.font = _recolor_font(_cell, "FFFFFF")
                 n_identitas_suspicious += 1
             elif own_col == 7 and (not other_cur or other_cur == "-"):
                 ws.cell(row=t.row, column=9, value="Suspicious")
                 for c in range(1, 10):
                     ws.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-                    ws.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+                    _cell = ws.cell(row=t.row, column=c)
+                    _cell.font = _recolor_font(_cell, "FFFFFF")
                 n_identitas_suspicious += 1
         for t in txns:
             if t.is_opening:
@@ -2803,7 +2821,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             ws_t.cell(row=t.row, column=9, value="Suspicious")
             for c in range(1, 10):
                 ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-                ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+                _cell = ws_t.cell(row=t.row, column=c)
+                _cell.font = _recolor_font(_cell, "FFFFFF")
             n_identitas_suspicious += 1
 
     # Lengkapi Objek jadi nama lengkap (Title Case) kalau dikenali dari
@@ -3068,7 +3087,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             gaji_ambiguous_ids.add(id(t))
             for c in range(1, 10):
                 ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-                ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+                _cell = ws_t.cell(row=t.row, column=c)
+                _cell.font = _recolor_font(_cell, "FFFFFF")
 
     # Pembayaran Hutang - Keterangan Tambahan (I) ditulis "Paid to
     # <penerima>" (pakai Objek, Title Case) - sama pola dengan Gaji di
@@ -3478,7 +3498,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_t.cell(row=t.row, column=9, value="Suspicious")
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-            ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+            _cell = ws_t.cell(row=t.row, column=c)
+            _cell.font = _recolor_font(_cell, "FFFFFF")
         vendor_fixed_ids.add(id(t))  # cegah pass "Kategori mencurigakan" di bawah menimpa/bersihkan balik
         n_kategori_mencurigakan += 1
 
@@ -3506,7 +3527,8 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_t.cell(row=t.row, column=9, value="Suspicious")
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-            ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+            _cell = ws_t.cell(row=t.row, column=c)
+            _cell.font = _recolor_font(_cell, "FFFFFF")
         vendor_fixed_ids.add(id(t))
         n_kategori_mencurigakan += 1
 
@@ -3540,13 +3562,15 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             if current_fill == "008B0000" and id(t) not in gaji_ambiguous_ids:
                 for c in range(1, 10):
                     ws_t.cell(row=t.row, column=c).fill = PatternFill(fill_type=None)
-                    ws_t.cell(row=t.row, column=c).font = Font(color="FF000000")
+                    _cell = ws_t.cell(row=t.row, column=c)
+                    _cell.font = _recolor_font(_cell, "FF000000")
             continue
         n_kategori_mencurigakan += 1
         ws_t.cell(row=t.row, column=9, value="Suspicious")
         for c in range(1, 10):
             ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
-            ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+            _cell = ws_t.cell(row=t.row, column=c)
+            _cell.font = _recolor_font(_cell, "FFFFFF")
 
     # Highlight grup kategori (Penjualan/Belanja Bahan+Kemasan/dst) -
     # HANYA diterapkan pada baris yang BELUM punya highlight dari pass
