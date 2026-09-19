@@ -2549,15 +2549,49 @@ def run_rekon_bersih(path, output_path):
 
     n_subjek_objek_dilengkapi = 0
     n_kategori_dilengkapi = 0
+    n_identitas_suspicious = 0
     for sn in sheets:
         ws = wb[sn]
         split_fliptech_combined_rows(ws)
         txns, _ = read_account_sheet(ws)
+        akun = _infer_account_name(txns) or sn
+        own_name = _display_account_name(akun)
+        # Verifikasi/koreksi IDENTITAS REKENING SENDIRI - sama seperti di
+        # /rekonlokal: uang MASUK -> Objek pasti rekening ini sendiri,
+        # uang KELUAR -> Subjek pasti rekening ini sendiri. Dijalankan
+        # PALING AWAL sebelum pass Title Case/kategori di bawah.
+        for t in txns:
+            if t.is_opening or t.nominal == 0:
+                continue
+            own_col, other_col = (8, 7) if t.nominal > 0 else (7, 8)
+            own_cur = (ws.cell(row=t.row, column=own_col).value or "").strip()
+            if own_cur.lower() != own_name.lower():
+                ws.cell(row=t.row, column=own_col, value=own_name)
+            other_cur = (ws.cell(row=t.row, column=other_col).value or "").strip()
+            if other_cur and other_cur.lower() == own_name.lower():
+                ws.cell(row=t.row, column=other_col, value="-")
+                ws.cell(row=t.row, column=9, value="Suspicious")
+                for c in range(1, 10):
+                    ws.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+                    ws.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+                n_identitas_suspicious += 1
+            elif own_col == 7 and (not other_cur or other_cur == "-"):
+                ws.cell(row=t.row, column=9, value="Suspicious")
+                for c in range(1, 10):
+                    ws.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+                    ws.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+                n_identitas_suspicious += 1
         for t in txns:
             if t.is_opening:
                 continue
-            for col, val in ((7, t.subjek), (8, t.objek)):
-                v = (val or "").strip()
+            if _is_known_i_label(ws.cell(row=t.row, column=9).value):
+                continue  # baru saja ditandai Suspicious oleh pass identitas di atas - jangan ditimpa
+            for col in (7, 8):
+                # Baca nilai LIVE dari sel (bukan t.subjek/t.objek yang
+                # bisa basi kalau baris ini baru saja dikoreksi pass
+                # identitas rekening sendiri di atas), supaya tidak
+                # menimpa balik koreksi itu dengan nilai lama.
+                v = (ws.cell(row=t.row, column=col).value or "").strip()
                 if not v or v == "-":
                     continue
                 nama_lengkap = EMPLOYEE_ALIASES.get(v.lower()) or _known_vendor_names.get(v.lower())
@@ -2728,6 +2762,50 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
 
     matches, _combo_matches = find_matches(all_txns, list(name_to_real.keys()))
 
+    # Verifikasi/koreksi IDENTITAS REKENING SENDIRI (Subjek/Objek) -
+    # invariant struktural: kalau uang MASUK (kredit), Objek SUDAH PASTI
+    # rekening aktif ini sendiri (penerima). Kalau uang KELUAR (debit),
+    # Subjek SUDAH PASTI rekening aktif ini sendiri (pengirim). Beberapa
+    # data sumber salah tulis (kosong, atau Subjek==Objek sama-sama
+    # rekening sendiri) - dipaksa benar di sini, PALING AWAL sebelum
+    # pass koreksi lain (vendor/EMPLOYEE_ALIASES/dst), supaya pass-pass
+    # itu bekerja di atas Subjek/Objek yang sudah konsisten strukturnya.
+    # Sisi LAWAN (counterparty) TIDAK diarang/ditebak - kalau sudah
+    # sama-sama merujuk rekening sendiri (bug self-referencing) atau
+    # kosong padahal ini transaksi KELUAR (harusnya tahu siapa
+    # penerimanya), ditandai "Suspicious" untuk verifikasi manual.
+    n_identitas_suspicious = 0
+    for t in all_txns:
+        if t.is_opening or t.nominal == 0:
+            continue
+        own_name = _display_account_name(t.sheet)
+        own_col, other_col = (8, 7) if t.nominal > 0 else (7, 8)
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        own_cur = (ws_t.cell(row=t.row, column=own_col).value or "").strip()
+        if own_cur.lower() != own_name.lower():
+            ws_t.cell(row=t.row, column=own_col, value=own_name)
+        other_cur = (ws_t.cell(row=t.row, column=other_col).value or "").strip()
+        perlu_verifikasi = False
+        if other_cur and other_cur.lower() == own_name.lower():
+            # Subjek == Objek == rekening sendiri - counterparty asli
+            # tidak diketahui, jangan dipertahankan (menyesatkan seolah
+            # transaksi ini "ke/dari diri sendiri").
+            ws_t.cell(row=t.row, column=other_col, value="-")
+            perlu_verifikasi = True
+        elif own_col == 7 and (not other_cur or other_cur == "-"):
+            # Transaksi KELUAR (uang keluar) tapi Objek/penerima kosong -
+            # janggal, uang keluar seharusnya diketahui tujuannya.
+            # (Transaksi MASUK dengan Subjek kosong DIBIARKAN - itu wajar
+            # untuk penjualan QRIS/kartu dari pelanggan anonim.)
+            perlu_verifikasi = True
+        if perlu_verifikasi:
+            ws_t.cell(row=t.row, column=9, value="Suspicious")
+            for c in range(1, 10):
+                ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+                ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+            n_identitas_suspicious += 1
+
     # Lengkapi Objek jadi nama lengkap (Title Case) kalau dikenali dari
     # EMPLOYEE_ALIASES (pegawai+owner) - kalau TIDAK dikenali, tulis
     # ALL CAPS supaya jelas kelihatan ini belum teridentifikasi (bukan
@@ -2747,8 +2825,11 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # jadi "Kas Kasir" di Subjek MAUPUN Objek untuk konsistensi
         # penamaan (permintaan eksplisit user) - dicek LEBIH DULU
         # sebelum EMPLOYEE_ALIASES, supaya tidak keduluan aturan lain.
-        objek_asli = (t.objek or "").strip()
-        subjek_asli = (t.subjek or "").strip()
+        # Dibaca LIVE dari sel (bukan t.objek/t.subjek yang bisa basi
+        # kalau baris ini baru saja dikoreksi pass identitas rekening
+        # sendiri di atas) supaya tidak menimpa balik koreksi itu.
+        objek_asli = (wb_t[sheet_t].cell(row=t.row, column=8).value or "").strip()
+        subjek_asli = (wb_t[sheet_t].cell(row=t.row, column=7).value or "").strip()
         _kas_buku_re = re.compile(r"^kas\s*/?\s*buku$", re.IGNORECASE)
         if subjek_asli and _kas_buku_re.match(subjek_asli):
             wb_t[sheet_t].cell(row=t.row, column=7, value="Kas Kasir")
@@ -3381,7 +3462,7 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         {k for k, v in EMPLOYEE_ALIASES.items() if v != "Ahmad Roziyan Hidayat"},
         key=len, reverse=True,
     )
-    n_kategori_mencurigakan = 0
+    n_kategori_mencurigakan = n_identitas_suspicious
     for t in all_txns:
         if t.is_opening or t.nominal <= 0:
             continue
