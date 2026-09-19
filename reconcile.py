@@ -115,6 +115,7 @@ AMBIGUOUS_FIRST_NAMES = shared_rules.get("ambiguous_first_names", ["baiq"])
 # lain - bukan otomatis "pasti benar" tanpa verifikasi.
 OWNER_ALIASES = shared_rules.get("owner_aliases", [
     "owner", "ojan", "kak ojan", "ozan", "pakdok", "roziyan", "ahmad roziyan hidayat",
+    "ahmad roziyan", "ahmad roziya",
 ])
 
 # Alias pegawai+owner -> nama lengkap (sumber SAMA dengan quarterly.py,
@@ -126,6 +127,11 @@ OWNER_ALIASES = shared_rules.get("owner_aliases", [
 _DEFAULT_EMPLOYEE_ALIASES = {
     "ahmad roziyan hidayat": "Ahmad Roziyan Hidayat", "ahmad roziyan h.": "Ahmad Roziyan Hidayat",
     "ahmad roziyan": "Ahmad Roziyan Hidayat", "roziyan hidayat": "Ahmad Roziyan Hidayat",
+    # "ahmad roziya" (tanpa "n") - alias/typo owner yang sering muncul di
+    # data bank mentah (mis. Subjek "AHMAD ROZIYA"/"Ahmad Roziya"). BEDA
+    # dengan "ahmad rizan" (lihat CATEGORY_OVERRIDE_RULES) - nama itu
+    # sengaja TIDAK dianggap owner, dipastikan Modal Masuk murni.
+    "ahmad roziya": "Ahmad Roziyan Hidayat",
     "roziyan": "Ahmad Roziyan Hidayat", "ojan": "Ahmad Roziyan Hidayat",
     "kak ojan": "Ahmad Roziyan Hidayat", "ozan": "Ahmad Roziyan Hidayat",
     "pakdok": "Ahmad Roziyan Hidayat", "owner": "Ahmad Roziyan Hidayat",
@@ -186,6 +192,10 @@ CAPITAL_SELF_TRANSFER_KEYWORDS = shared_rules.get("capital_self_transfer_keyword
 _DEFAULT_CATEGORY_OVERRIDE_RULES = [
     {"any": ["pengeluaran pribadi", "keperluan pribadi", "kepentingan pribadi", "milik pribadi"],
      "category": "Pengeluaran Pribadi", "sheet_contains": None},
+    # "Ahmad Rizan" SENGAJA dibedakan dari owner ("Ahmad Roziyan
+    # Hidayat"/alias "Ahmad Roziya") - nama beda orang, dipastikan Modal
+    # Masuk murni (modal/investasi masuk), BUKAN transfer internal owner.
+    {"any": ["ahmad rizan"], "category": "Modal & Setoran Pemilik", "sheet_contains": None},
     {"all": ["briva", "tokopedia"], "amount_min": 900000, "amount_max": 1100000,
      "category": "Overhead", "sheet_contains": None},
     {"any": ["tokopedia"], "category": "Belanja Bahan", "sheet_contains": None},
@@ -3360,7 +3370,65 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         wb_t[sheet_t].cell(row=t.row, column=3, value=hitung)
         new_kategori_fixed_ids.add(id(t))
 
+    # Transaksi MASUK (kredit) yang Subjek/pengirimnya adalah nama pegawai
+    # dari roster gaji (EMPLOYEE_ALIASES, BUKAN owner) - kemungkinan besar
+    # setoran tunai hasil penjualan yang disetor pegawai ke rekening bank,
+    # BUKAN transfer dari pihak luar. Dipaksa jadi "Setoran Tunai"
+    # (Kolom B) + "Transaksi Internal" (Kolom C), SEKALIGUS ditandai
+    # Suspicious (perlu verifikasi manual - kenapa nama pegawai yang
+    # muncul sebagai pengirim, bukan nama rekening bank/kas sendiri).
+    _employee_only_keywords = sorted(
+        {k for k, v in EMPLOYEE_ALIASES.items() if v != "Ahmad Roziyan Hidayat"},
+        key=len, reverse=True,
+    )
     n_kategori_mencurigakan = 0
+    for t in all_txns:
+        if t.is_opening or t.nominal <= 0:
+            continue
+        subjek_lc = (t.subjek or "").strip().lower()
+        if not subjek_lc:
+            continue
+        if not any(re.search(r"\b" + re.escape(kw) + r"\b", subjek_lc) for kw in _employee_only_keywords):
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=2, value="Setoran Tunai")
+        ws_t.cell(row=t.row, column=3, value="Transaksi Internal")
+        ws_t.cell(row=t.row, column=9, value="Suspicious")
+        for c in range(1, 10):
+            ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+            ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+        vendor_fixed_ids.add(id(t))  # cegah pass "Kategori mencurigakan" di bawah menimpa/bersihkan balik
+        n_kategori_mencurigakan += 1
+
+    # Transaksi MASUK (kredit) yang Keterangan-nya masih "Belanja ..."
+    # (kategori pengeluaran) - JANGGAL kalau arahnya masuk, kemungkinan
+    # besar ini sebenarnya setoran tunai yang salah tercatat. HANYA
+    # berlaku di rekening BANK (BRI/BCA/BSI/Jago/dst) - sheet Kas Buku/
+    # Kas Kasir DILINDUNGI dan TIDAK PERNAH kena override ini (setoran/
+    # penarikan kas fisik di buku kas memang wajar, bukan anomali),
+    # sesuai penegasan user.
+    for t in all_txns:
+        if t.is_opening or t.nominal <= 0:
+            continue
+        if id(t) in vendor_fixed_ids:
+            continue  # sudah ditangani pass lain (mis. setoran tunai pegawai di atas)
+        if (t.sheet or "").strip().lower().startswith("kas"):
+            continue  # lindungi Kas Buku/Kas Kasir - tidak pernah disentuh pass ini
+        desc_lc = (t.desc or "").strip().lower()
+        if not desc_lc.startswith("belanja"):
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=2, value="Setoran Tunai")
+        ws_t.cell(row=t.row, column=3, value="Transaksi Internal")
+        ws_t.cell(row=t.row, column=9, value="Suspicious")
+        for c in range(1, 10):
+            ws_t.cell(row=t.row, column=c).fill = REKONLOKAL_SUSPECT_CATEGORY_FILL
+            ws_t.cell(row=t.row, column=c).font = Font(color="FFFFFF")
+        vendor_fixed_ids.add(id(t))
+        n_kategori_mencurigakan += 1
+
     for t in all_txns:
         if t.is_opening:
             continue
