@@ -35,6 +35,7 @@ Environment variable yang dibutuhkan:
 - BOT_TOKEN : token bot dari BotFather
 """
 
+import functools
 import logging
 import os
 import shutil
@@ -60,6 +61,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+# Whitelist akses bot - HANYA user_id di daftar ini yang boleh pakai bot
+# (command apapun maupun upload dokumen). Selain itu: "Access denied.".
+ALLOWED_USER_IDS = {6971888923, 998967085}
+
+
+def restricted(func):
+    """Decorator - cek update.effective_user.id terhadap ALLOWED_USER_IDS
+    sebelum menjalankan handler asli. Dipasang di SEMUA command handler
+    dan message handler saat didaftarkan di main(), bukan di tiap fungsi,
+    supaya tidak perlu mengubah isi tiap handler satu-satu."""
+    @functools.wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        if not user or user.id not in ALLOWED_USER_IDS:
+            if update.message:
+                await update.message.reply_text("Access denied.")
+            logger.warning("Access denied untuk user_id=%s (%s)",
+                            user.id if user else None, user.username if user else None)
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
 # cache file terakhir yang diupload tiap user, supaya /laporan tidak perlu
 # upload ulang. Disimpan di disk (bukan cuma di memori) karena worker bisa
@@ -986,23 +1009,23 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("Env var BOT_TOKEN belum di-set")
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("laporan", laporan_command))
-    app.add_handler(CommandHandler("kuartal", kuartal_command))
-    app.add_handler(CommandHandler("tahunan", tahunan_command))
-    app.add_handler(CommandHandler("selesai", selesai_command))
-    app.add_handler(CommandHandler("batal", batal_command))
-    app.add_handler(CommandHandler("tambahkategori", tambahkategori_command))
-    app.add_handler(CommandHandler("tambahalias", tambahalias_command))
-    app.add_handler(CommandHandler("lihataturan", lihataturan_command))
-    app.add_handler(CommandHandler("lihatalias", lihatalias_command))
-    app.add_handler(CommandHandler("hapusaturan", hapusaturan_command))
-    app.add_handler(CommandHandler("kontinuitas", kontinuitas_command))
-    app.add_handler(CommandHandler("rekonlokal", rekonlokal_command))
-    app.add_handler(CommandHandler("rekonbersih", rekonbersih_command))
-    app.add_handler(CommandHandler("auditkasir", auditkasir_command))
-    app.add_handler(CommandHandler("cmd", cmd_command))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(CommandHandler("start", restricted(start)))
+    app.add_handler(CommandHandler("laporan", restricted(laporan_command)))
+    app.add_handler(CommandHandler("kuartal", restricted(kuartal_command)))
+    app.add_handler(CommandHandler("tahunan", restricted(tahunan_command)))
+    app.add_handler(CommandHandler("selesai", restricted(selesai_command)))
+    app.add_handler(CommandHandler("batal", restricted(batal_command)))
+    app.add_handler(CommandHandler("tambahkategori", restricted(tambahkategori_command)))
+    app.add_handler(CommandHandler("tambahalias", restricted(tambahalias_command)))
+    app.add_handler(CommandHandler("lihataturan", restricted(lihataturan_command)))
+    app.add_handler(CommandHandler("lihatalias", restricted(lihatalias_command)))
+    app.add_handler(CommandHandler("hapusaturan", restricted(hapusaturan_command)))
+    app.add_handler(CommandHandler("kontinuitas", restricted(kontinuitas_command)))
+    app.add_handler(CommandHandler("rekonlokal", restricted(rekonlokal_command)))
+    app.add_handler(CommandHandler("rekonbersih", restricted(rekonbersih_command)))
+    app.add_handler(CommandHandler("auditkasir", restricted(auditkasir_command)))
+    app.add_handler(CommandHandler("cmd", restricted(cmd_command)))
+    app.add_handler(MessageHandler(filters.Document.ALL, restricted(handle_document)))
     app.add_error_handler(error_handler)
     logger.info("Bot rekonsiliasi jalan...")
     # drop_pending_updates: buang antrean update lama saat start - supaya
