@@ -2190,6 +2190,19 @@ def _looks_like_account_identifier(v):
     return any(tok in v_lower for tok in ("jago", "kas", "buku", "mandiri", "bni", "bri", "bca", "bsi"))
 
 
+# Kapitalisasi BAKU untuk nama rekening yang TIDAK ditulis dengan kode
+# angka (mis. "Jago" - beda dari "BRI-507"/"BCA-887" yang konvensinya
+# memang uppercase) - dipakai supaya nama rekening begini tidak salah
+# dipaksa ALL CAPS oleh pass pelengkapan Objek (yang aturannya HANYA
+# untuk nama orang/vendor yang belum dikenali, bukan nama rekening).
+_ACCOUNT_NAME_CASE_FIX = {
+    "jago": "Jago",
+    "kas/buku": "Kas Kasir",
+    "kas buku": "Kas Kasir",
+    "kas kasir": "Kas Kasir",
+}
+
+
 _MONTH_NAMES_LOWER = {m.lower() for m in ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
                                             "Juli", "Agustus", "September", "Oktober", "November", "Desember"]}
 
@@ -2929,6 +2942,33 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # Dibaca LIVE dari sel (bukan t.objek/t.subjek yang bisa basi
         # kalau baris ini baru saja dikoreksi pass identitas rekening
         # sendiri di atas) supaya tidak menimpa balik koreksi itu.
+        # Baris yang SUDAH punya label bermakna di Keterangan Tambahan
+        # (mis. "Solved X to Y" dari hasil matching run /rekonlokal
+        # SEBELUMNYA dengan file pasangan yang beda dari run kali ini) -
+        # JANGAN disentuh sama sekali di sini. Objek-nya kemungkinan
+        # besar SUDAH benar (nama rekening lawan seperti "Jago"/
+        # "BCA-887", bukan nama orang) dari proses matching run
+        # sebelumnya - pass ini TIDAK PUNYA CARA membedakan nama
+        # rekening yang belum sempat dikenali dari nama orang yang
+        # genuinely belum dikenali, jadi kalau dipaksa jalan di sini
+        # akan salah menimpa "Jago" (benar) jadi "JAGO" (ALL CAPS,
+        # seolah belum dikenali) - bug yang ditemukan user, karena
+        # run kali ini tidak ikut memproses file pasangan Jago-nya lagi
+        # (row ini tidak lewat pass matching di bawah untuk dikoreksi
+        # balik).
+        if _is_known_i_label(wb_t[sheet_t].cell(row=t.row, column=9).value):
+            # Meski dilewati, TETAP betulkan kapitalisasi kalau Objek-nya
+            # ternyata nama REKENING yang kebetulan sudah kadung ALL CAPS
+            # dari proses SEBELUM fix ini ada (mis. "JAGO" harusnya
+            # "Jago") - _looks_like_account_identifier membedakan nama
+            # rekening dari nama orang/vendor biasa (yang memang wajib
+            # dibiarkan ALL CAPS kalau belum dikenali).
+            _objek_now = (wb_t[sheet_t].cell(row=t.row, column=8).value or "").strip()
+            if _objek_now and _looks_like_account_identifier(_objek_now):
+                _fixed_case = _ACCOUNT_NAME_CASE_FIX.get(_objek_now.lower())
+                if _fixed_case and _objek_now != _fixed_case:
+                    wb_t[sheet_t].cell(row=t.row, column=8, value=_fixed_case)
+            continue
         objek_asli = (wb_t[sheet_t].cell(row=t.row, column=8).value or "").strip()
         subjek_asli = (wb_t[sheet_t].cell(row=t.row, column=7).value or "").strip()
         _kas_buku_re = re.compile(r"^kas\s*/?\s*buku$", re.IGNORECASE)
@@ -2942,6 +2982,16 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         nama_lengkap = EMPLOYEE_ALIASES.get(objek_asli.lower())
         if nama_lengkap:
             wb_t[sheet_t].cell(row=t.row, column=8, value=nama_lengkap)
+        elif _looks_like_account_identifier(objek_asli):
+            # Nama REKENING (mis. "Jago"/"BRI-507"), BUKAN nama orang -
+            # jangan dipaksa ALL CAPS (yang menyesatkan seolah belum
+            # dikenali) - normalisasi ke kapitalisasi baku kalau dikenal
+            # (lihat _ACCOUNT_NAME_CASE_FIX), atau dibiarkan apa adanya
+            # kalau memang sudah dalam bentuk baku (mis. kode bank yang
+            # secara konvensi memang ditulis uppercase, "BRI-507").
+            _fixed_case = _ACCOUNT_NAME_CASE_FIX.get(objek_asli.lower())
+            if _fixed_case and objek_asli != _fixed_case:
+                wb_t[sheet_t].cell(row=t.row, column=8, value=_fixed_case)
         elif objek_asli != objek_asli.upper():
             wb_t[sheet_t].cell(row=t.row, column=8, value=objek_asli.upper())
 
@@ -3046,8 +3096,20 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
             fill = _bank_group_fill(penerima.sheet)
         if fill is not None:
             for c in range(1, 10):
-                ws_p.cell(row=pengirim.row, column=c).fill = fill
-                ws_r.cell(row=penerima.row, column=c).fill = fill
+                # Reset warna font ke hitam (BUKAN dibiarkan) - baris ini
+                # bisa saja SEBELUMNYA (run /rekonlokal terdahulu) sempat
+                # ditandai Suspicious (font dipaksa putih di atas fill
+                # merah tua), lalu di run BERIKUTNYA (dengan file pasangan
+                # yang berbeda) ternyata ketemu pasangannya dan jadi
+                # "Solved"/match normal - kalau font putih dibiarkan,
+                # teksnya jadi TIDAK TERBACA di atas fill kuning/biru/
+                # oranye biasa (bug yang ditemukan user).
+                _cell_p = ws_p.cell(row=pengirim.row, column=c)
+                _cell_r = ws_r.cell(row=penerima.row, column=c)
+                _cell_p.fill = fill
+                _cell_r.fill = fill
+                _cell_p.font = _recolor_font(_cell_p, "FF000000")
+                _cell_r.font = _recolor_font(_cell_r, "FF000000")
 
     # Transaksi internal yang TIDAK ketemu pasangannya - dihighlight
     # MERAH supaya kelihatan jelas mana yang masih perlu ditelusuri
@@ -3101,7 +3163,9 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_t = wb_t[sheet_t]
         ws_t.cell(row=src.row, column=9, value="Unresolved")
         for c in range(1, 10):
-            ws_t.cell(row=src.row, column=c).fill = REKONLOKAL_UNMATCHED_FILL
+            _cell = ws_t.cell(row=src.row, column=c)
+            _cell.fill = REKONLOKAL_UNMATCHED_FILL
+            _cell.font = _recolor_font(_cell, "FF000000")  # lihat catatan reset font di pass matches di atas
 
     # Setoran tunai (mis. "SETORAN VIA CDM") - transaksi yang self-
     # referencing (Subjek==Objek==rekening sendiri, uang tunai masuk
@@ -3449,14 +3513,21 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # Objek-nya sendiri sudah dipastikan rekening sendiri oleh pass
         # verifikasi identitas di atas dan TIDAK boleh ditimpa balik.
         counterparty_col = 7 if t.nominal > 0 else 8
-        counterparty_raw = (t.subjek if counterparty_col == 7 else t.objek) or ""
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        # Baca LIVE dari sel (bukan t.subjek/t.objek yang basi) - kolom
+        # ini bisa saja BARU SAJA ditimpa ALL CAPS oleh pass pelengkapan
+        # Title Case/EMPLOYEE_ALIASES sebelumnya (yang tidak kenal nama
+        # vendor ini), padahal nilai ASLI/tercache sudah kebetulan sama
+        # persis dengan objek_baru vendor ini - kalau perbandingan pakai
+        # cache basi, sudah_benar salah jadi True dan ALL CAPS itu tidak
+        # pernah dibetulkan balik (bug yang ditemukan user).
+        counterparty_raw = (ws_t.cell(row=t.row, column=counterparty_col).value or "").strip()
         sudah_benar = (t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru
-                       and (objek_baru is None or counterparty_raw.strip() == objek_baru))
+                       and (objek_baru is None or counterparty_raw == objek_baru))
         if sudah_benar:
             continue  # sudah benar, tidak perlu apa-apa
         vendor_fixed_ids.add(id(t))
-        wb_t, sheet_t = name_to_real[t.sheet]
-        ws_t = wb_t[sheet_t]
         # Vendor sudah "confirmed" (dikenali pasti dari daftar) -
         # Keterangan Tambahan ditulis "Paid Off to <tenant>" sesuai
         # permintaan user, BUKAN diarsip (vendor yang sudah pasti
@@ -3482,14 +3553,16 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         # dikenali ditulis ke kolom yang benar tergantung arah uang,
         # BUKAN selalu Objek (lihat komentar pass sebelumnya).
         counterparty_col = 7 if t.nominal > 0 else 8
-        counterparty_raw = (t.subjek if counterparty_col == 7 else t.objek) or ""
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        # Baca LIVE (lihat catatan sejenis di pass _kas_buku_vendor_info
+        # di atas) - hindari sudah_benar salah True gara-gara cache basi.
+        counterparty_raw = (ws_t.cell(row=t.row, column=counterparty_col).value or "").strip()
         sudah_benar = (t.desc == keterangan_baru and (t.kategori or "").strip() == kategori_baru
-                       and counterparty_raw.strip() == objek_baru)
+                       and counterparty_raw == objek_baru)
         if sudah_benar:
             continue
         vendor_fixed_ids.add(id(t))
-        wb_t, sheet_t = name_to_real[t.sheet]
-        ws_t = wb_t[sheet_t]
         # Sama seperti pass vendor Keterangan - vendor sudah "confirmed"
         # dari Objek, Keterangan Tambahan ditulis "Paid Off to <tenant>".
         ws_t.cell(row=t.row, column=9, value=f"Paid Off to {objek_baru}")
@@ -3819,8 +3892,16 @@ def correct_and_highlight_matched_transfers(wb, matches, combo_matches):
         fill = _bank_group_fill(penerima.sheet)
         if fill is not None:
             for c in range(1, 10):
-                ws_pengirim.cell(row=pengirim.row, column=c).fill = fill
-                ws_penerima.cell(row=penerima.row, column=c).fill = fill
+                # Reset font ke hitam - baris ini bisa saja sebelumnya
+                # (proses/run terdahulu) sempat ditandai Suspicious (font
+                # putih di atas fill merah tua) - lihat catatan sejenis di
+                # run_rekon_lokal.
+                _cell_pengirim = ws_pengirim.cell(row=pengirim.row, column=c)
+                _cell_penerima = ws_penerima.cell(row=penerima.row, column=c)
+                _cell_pengirim.fill = fill
+                _cell_penerima.fill = fill
+                _cell_pengirim.font = _recolor_font(_cell_pengirim, "FF000000")
+                _cell_penerima.font = _recolor_font(_cell_penerima, "FF000000")
 
     for m in matches:
         if m.dst is not None and m.confidence in ("High", "Medium", "Low"):
