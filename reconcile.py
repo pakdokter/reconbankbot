@@ -1928,22 +1928,22 @@ def _settled_to_bank_label(sheet_title):
 # polos, supaya kata pendek seperti "SB"/"Pasar" tidak salah tangkap
 # teks lain yang kebetulan mengandungnya).
 _KAS_BUKU_VENDOR_RULES = [
-    (["belanja sb", "sinar bahagia", "sb"], "Sinar Bahagia", "Belanja Bahan", "Sinar Bahagia"),
-    (["belanja amanah", "amanah"], "Amanah", "Belanja Bahan", "Amanah"),
-    (["belanja fadhilah", "fadhilah"], "Fadhilah", "Belanja Bahan", "Fadhilah"),
-    (["belanja primer raya", "primer raya", "primer"], "Primer", "Belanja Bahan", "Primer"),
-    (["belanja pasar", "pasar"], "Pasar", "Belanja Bahan", "Pasar"),
-    (["belanja abadi", "abadi"], "Pasar", "Belanja Bahan", "Pasar"),
-    (["dinda food", "dinda frozen", "belanja dinda"], "Dinda Food and Frozen", "Belanja Bahan", "Dinda Food and Frozen"),
-    (["belanja mak opik", "mak opik", "mak opi"], "Mak Opik", "Belanja Bahan", "Mak Opik"),
-    (["galon", "cleo"], "Air Mineral", "Belanja Bahan", "Air Mineral"),
-    (["belanja arumi", "arumi"], "Arumi", "Kemasan", "Arumi"),
-    (["masuya"], "UHT dan Pasta", "Belanja Bahan", "Masuya"),
-    (["pembayaran briva ke tokopedia", "tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
+    (["belanja sb", "sinar bahagia", "sb"], "Belanja Bahan Sinar Bahagia", "Belanja Bahan", "Sinar Bahagia"),
+    (["belanja amanah", "amanah"], "Belanja Bahan Amanah", "Belanja Bahan", "Amanah"),
+    (["belanja fadhilah", "fadhilah"], "Belanja Bahan Fadhilah", "Belanja Bahan", "Fadhilah"),
+    (["belanja primer raya", "primer raya", "primer"], "Belanja Bahan Primer", "Belanja Bahan", "Primer"),
+    (["belanja pasar", "pasar"], "Belanja Bahan Pasar", "Belanja Bahan", "Pasar"),
+    (["belanja abadi", "abadi"], "Belanja Bahan Pasar", "Belanja Bahan", "Pasar"),
+    (["dinda food", "dinda frozen", "belanja dinda"], "Belanja Bahan Dinda Food and Frozen", "Belanja Bahan", "Dinda Food and Frozen"),
+    (["belanja mak opik", "mak opik", "mak opi"], "Belanja Bahan Mak Opik", "Belanja Bahan", "Mak Opik"),
+    (["galon", "cleo"], "Belanja Bahan Air Mineral", "Belanja Bahan", "Air Mineral"),
+    (["belanja arumi", "arumi"], "Belanja Bahan Arumi", "Kemasan", "Arumi"),
+    (["masuya"], "Belanja Bahan UHT dan Pasta", "Belanja Bahan", "Masuya"),
+    (["pembayaran briva ke tokopedia", "tokopedia"], "Belanja Tokopedia", "Belanja Bahan", "Tokopedia"),
     (["mira laundry"], "Mira Laundry", "Overhead", "Mira Laundry"),
-    (["tomoro coffee", "tomoro"], "Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
-    (["sukanda jaya", "diamond fair", "sukanda"], "Sukanda", "Belanja Bahan", "Sukanda"),
-    (["shopeepay", "shopee pay", "shopee"], "Shopee", "Belanja Bahan", "Shopee"),
+    (["tomoro coffee", "tomoro"], "Rapat di Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
+    (["sukanda jaya", "diamond fair", "sukanda"], "Produk Bahan Sukanda", "Belanja Bahan", "Sukanda"),
+    (["shopeepay", "shopee pay", "shopee"], "Belanja Bahan Shopee", "Belanja Bahan", "Shopee"),
     (["iklan tiktok", "tiktok ads", "tiktok"], "TikTok", "Marketing", "TikTok"),
     (["iklan facebook", "facebook ads", "fb ads", "meta ads", "facebook"], "MetaAds", "Marketing", "MetaAds"),
     (["dompet anak bangsa"], "Gopay", "Overhead", "Gopay"),
@@ -1956,34 +1956,43 @@ _KAS_BUKU_VENDOR_RULES = [
 # _KAS_BUKU_VENDOR_RULES (keyword_objek, keterangan_baru, kategori_baru,
 # objek_baru) - keyword dicek pakai batas kata terhadap Objek transaksi.
 _OBJEK_VENDOR_RULES = [
-    (["nanda audia agusti", "nanda audia agustin", "kliffer plastik"], "Kliffer Plastik", "Kemasan", "Kliffer Plastik"),
-    (["madam baha", "madam bahan kue", "toko madam"], "Toko Madam", "Belanja Bahan", "Toko Madam"),
+    (["nanda audia agusti", "nanda audia agustin", "kliffer plastik"], "Kemasan Kliffer", "Kemasan", "Kliffer Plastik"),
+    (["madam baha", "madam bahan kue", "toko madam"], "Bahan Kue", "Belanja Bahan", "Toko Madam"),
     (["dompet anak bangsa"], "Gopay", "Overhead", "Gopay"),
-    (["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "Anugerah Plastik", "Kemasan", "Anugerah Plastik"),
+    (["yulia indah pratiwi", "yulia indah pratiw", "anugerah plastik"], "Kemasan Anugerah", "Kemasan", "Anugerah Plastik"),
     (["mira laundry"], "Mira Laundry", "Overhead", "Mira Laundry"),
-    (["tomoro coffee", "tomoro"], "Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
-    (["sukanda jaya", "diamond fair", "sukanda"], "Sukanda", "Belanja Bahan", "Sukanda"),
-    (["shopeepay", "shopee pay"], "Shopee", "Belanja Bahan", "Shopee"),
+    (["tomoro coffee", "tomoro"], "Rapat di Tomoro Coffee", "Belanja Bahan", "Tomoro Coffee"),
+    (["sukanda jaya", "diamond fair", "sukanda"], "Produk Bahan Sukanda", "Belanja Bahan", "Sukanda"),
+    (["shopeepay", "shopee pay"], "Belanja Bahan Shopee", "Belanja Bahan", "Shopee"),
     (["iklan tiktok", "tiktok ads", "tiktok"], "TikTok", "Marketing", "TikTok"),
     (["iklan facebook", "facebook ads", "fb ads", "meta ads", "facebook"], "MetaAds", "Marketing", "MetaAds"),
-    (["rasbani"], "Waroeng Rasbani", "Konsumsi dan Liburan", "Waroeng Rasbani"),
+    (["rasbani"], "Konsumsi Internal Waroeng Rasbani", "Konsumsi dan Liburan", "Waroeng Rasbani"),
     (["biaya transfer keluar biaya"], "Biaya Transfer Keluar", "Biaya Admin Bank", "Biaya Admin Bank"),
     (["adobe"], "Adobe", "Subscription", "Adobe"),
-    (["ace team hq i", "ace team"], "Ace Team", "Pengeluaran Pribadi", "Ace Team"),
-    (["kava coffee"], "Kava Coffee", "Pengeluaran Pribadi", "Kava Coffee"),
-    (["tokopedia"], "Tokopedia", "Belanja Bahan", "Tokopedia"),
-    (["samsul padli"], "Bayar Mess Karyawan", "Overhead", "Samsul Padli"),
-    (["muhammad zulfadli"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Zulfadli"),
-    (["muhammad umar al-khatib", "muhammad umar al khatib", "muhammad umar"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Umar Al-Khatib"),
-    (["angga eka"], "Angga Eka", "Belanja Assets", "Angga Eka"),
-    (["asrul yusuf"], "Asrul Yusuf", "Belanja Bahan", "Asrul Yusuf"),
-    (["dapoer ibu fenny", "dapur ibu fenny"], "Dapoer Ibu Fenny", "Konsumsi dan Liburan", "Dapoer Ibu Fenny"),
-    (["arafat bahaswen"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Arafat Bahaswen"),
-    (["shopee"], "Shopee", "Belanja Bahan", "Shopee"),
-    (["saddam"], "Bahan Material Bangunan", "Sewa dan Maintenance Bangunan", "Saddam"),
-    (["pt yaoya berkat sejati", "yaoya berkat sejati", "yaoya"], "Yaoya", "Belanja Bahan", "Yaoya"),
+    (["ace team hq i", "ace team"], "Rapat di Ace Team", "Pengeluaran Pribadi", "Ace Team"),
+    (["kava coffee"], "Rapat di Kava Coffee", "Pengeluaran Pribadi", "Kava Coffee"),
+    # ASUMSI (perlu dikonfirmasi user): kategori Doto & Gairah disamakan
+    # dengan Ace Team/Kava Coffee ("Pengeluaran Pribadi") karena sama-sama
+    # pola "Rapat di [tenant]" - belum ada kepastian kategori aslinya.
+    (["doto"], "Rapat di Doto", "Pengeluaran Pribadi", "Doto"),
+    (["gairah"], "Rapat di Gairah", "Pengeluaran Pribadi", "Gairah"),
+    (["tokopedia"], "Belanja Tokopedia", "Belanja Bahan", "Tokopedia"),
+    (["samsul padli"], "Mess Karyawan", "Overhead", "Samsul Padli"),
+    (["muhammad zulfadli"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Zulfadli"),
+    (["muhammad umar al-khatib", "muhammad umar al khatib", "muhammad umar"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Muhammad Umar Al-Khatib"),
+    (["angga eka"], "Furniture", "Belanja Assets", "Angga Eka"),
+    (["asrul yusuf"], "Belanja Bahan Asrul Yusuf", "Belanja Bahan", "Asrul Yusuf"),
+    (["dapoer ibu fenny", "dapur ibu fenny"], "Konsumsi Internal Dapoer Ibu Fenny", "Konsumsi dan Liburan", "Dapoer Ibu Fenny"),
+    (["arafat bahaswen"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Arafat Bahaswen"),
+    (["shopee"], "Belanja Bahan Shopee", "Belanja Bahan", "Shopee"),
+    (["saddam"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Saddam"),
+    (["pt yaoya berkat sejati", "yaoya berkat sejati", "yaoya"], "Bahan Kue", "Belanja Bahan", "Yaoya"),
     (["yudi haryono"], "Reparasi Tools Listrik", "Reparasi dan Maintenance Tools dan Mesin", "Yudi Haryono"),
-    (["oriel chicken"], "Oriel Chicken", "Konsumsi dan Liburan", "Oriel Chicken"),
+    (["oriel chicken"], "Konsumsi Internal Oriel Chicken", "Konsumsi dan Liburan", "Oriel Chicken"),
+    # ENTRY BARU (belum pernah ada sebelumnya) - dikonfirmasi user, sama
+    # treatment-nya dengan vendor bahan bangunan lain di atas.
+    (["mitra10", "mitra 10"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Mitra10 Bangunan"),
+    (["depo bangunan"], "Bahan Bangunan", "Sewa dan Maintenance Bangunan", "Depo Bangunan"),
 ]
 
 
@@ -3249,6 +3258,54 @@ def run_rekon_lokal(path1, path2, out1, out2, filename1=None, filename2=None):
         ws_t.cell(row=t.row, column=2, value=keterangan_baru)
         ws_t.cell(row=t.row, column=3, value=kategori_baru)
         ws_t.cell(row=t.row, column=8, value=objek_baru)
+
+    # Tokopedia: default Kolom B "Belanja Tokopedia", KECUALI nominal
+    # besar (asumsi ambang Rp2.000.000, item mahal cenderung Assets/
+    # peralatan, bukan bahan habis pakai) -> Kolom B "Belanja Assets".
+    # HANYA Kolom B yang disentuh - Kategori (Kolom C, tetap "Belanja
+    # Bahan" dari rule di atas) dan Objek TIDAK diubah oleh pass ini.
+    # ASUMSI ambang nominal ini perlu dikonfirmasi/disesuaikan user.
+    _TOKOPEDIA_ASSET_THRESHOLD = 2_000_000
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        if (t.objek or "").strip().lower() != "tokopedia":
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        if abs(t.nominal) >= _TOKOPEDIA_ASSET_THRESHOLD:
+            ws_t.cell(row=t.row, column=2, value="Belanja Assets")
+
+    # OVO: dipakai khusus untuk bayar Grabfood - Kolom B "Konsumsi
+    # Internal via Grabfood", KECUALI baris ini sudah di-override manual
+    # jadi "Pengeluaran Pribadi" (Kategori Kolom C), sesuai penegasan
+    # user. HANYA Kolom B yang disentuh.
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        if (t.effective_kategori or "").strip().lower() == "pengeluaran pribadi":
+            continue
+        teks_asli = f"{t.desc or ''} {t.objek or ''} {t.subjek or ''}".lower()
+        if "ovo" not in teks_asli:
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=2, value="Konsumsi Internal via Grabfood")
+
+    # Rekening Keluarga/Owner: dicurigai transaksi internal terlebih
+    # dahulu (dua arah, masuk maupun keluar) - Kolom B "dari Rekening
+    # Keluarga". HANYA Kolom B yang disentuh, Kategori/Subjek/Objek asli
+    # dibiarkan apa adanya untuk diverifikasi manual.
+    for t in all_txns:
+        if t.is_opening:
+            continue
+        subjek_lc = (t.subjek or "").strip().lower()
+        objek_lc = (t.objek or "").strip().lower()
+        if not (subjek_lc.startswith("rekening keluarga") or objek_lc.startswith("rekening keluarga")):
+            continue
+        wb_t, sheet_t = name_to_real[t.sheet]
+        ws_t = wb_t[sheet_t]
+        ws_t.cell(row=t.row, column=2, value="dari Rekening Keluarga")
 
     # Kategori mencurigakan - Kategori TERSIMPAN beda dari yang
     # DIHITUNG sistem berdasarkan Keterangan/Objek (effective_kategori,
